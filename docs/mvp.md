@@ -41,6 +41,13 @@ python -m proof_of_heat.main
 
 The service will start on `http://0.0.0.0:8000`.
 
+Open the lightweight UI at `http://localhost:8000/ui` (or just `http://localhost:8000/`) for a simple control panel that can:
+
+- refresh live status
+- set target temperature and mode
+- start/stop the miner
+- set a power limit
+
 ## Endpoints
 
 - `GET /health` — service status.
