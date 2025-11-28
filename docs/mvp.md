@@ -35,7 +35,7 @@ the network.
 python -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
-uvicorn proof_of_heat.main:app --reload
+python -m proof_of_heat.main
 ```
 
 The service will start on `http://0.0.0.0:8000`.
