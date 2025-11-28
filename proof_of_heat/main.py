@@ -202,10 +202,12 @@ def create_app(config: AppConfig = DEFAULT_CONFIG) -> FastAPI:
     return app
 
 
+app = create_app()
+
+
 def run() -> None:
     import uvicorn
 
-    app = create_app()
     uvicorn.run(app, host="0.0.0.0", port=8000)
 
 

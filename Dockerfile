@@ -16,4 +16,4 @@ RUN mkdir -p /app/data
 
 EXPOSE 8000
 
-CMD ["uvicorn", "proof_of_heat.main:create_app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["uvicorn", "proof_of_heat.main:app", "--host", "0.0.0.0", "--port", "8000"]
