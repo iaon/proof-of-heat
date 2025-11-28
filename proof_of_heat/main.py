@@ -202,7 +202,27 @@ def create_app(config: AppConfig = DEFAULT_CONFIG) -> FastAPI:
     return app
 
 
-app = create_app()
+def _safe_create_app() -> FastAPI:
+    """Create the FastAPI app but never leave it undefined.
+
+    If initialization fails for any reason (e.g., bad config, missing CLI),
+    return a small diagnostics app so uvicorn still exposes something instead
+    of erroring with "Attribute app not found".
+    """
+
+    try:
+        return create_app()
+    except Exception as exc:  # pragma: no cover - defensive fallback
+        fallback = FastAPI(title="proof-of-heat MVP", version="0.1.0")
+
+        @fallback.get("/health")
+        def failed_health() -> Dict[str, str]:
+            return {"status": "error", "detail": str(exc)}
+
+        return fallback
+
+
+app: FastAPI = _safe_create_app()
 
 
 def run() -> None:
