@@ -1,9 +1,30 @@
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import Any, Dict
 
 _startup_error: Exception | None = None
+
+
+def _diagnostic_app(error: Exception):  # pragma: no cover - defensive fallback
+    async def app(scope, receive, send):
+        if scope.get("type") != "http":
+            await send({"type": "http.response.start", "status": 500, "headers": []})
+            await send({"type": "http.response.body", "body": b"ASGI app unavailable"})
+            return
+
+        body = f"proof-of-heat failed to start: {error}".encode()
+        headers = [(b"content-type", b"text/plain; charset=utf-8")]
+        await send({"type": "http.response.start", "status": 500, "headers": headers})
+        await send({"type": "http.response.body", "body": body})
+
+    return app
+
+
+app: Any = _diagnostic_app(Exception("proof-of-heat app not initialized"))
+logger = logging.getLogger("proof_of_heat")
+logging.basicConfig(level=logging.INFO)
 
 try:  # Lazy import to allow a diagnostic ASGI fallback if dependencies are missing
     from fastapi import FastAPI, HTTPException
@@ -21,7 +42,10 @@ except Exception as exc:  # pragma: no cover - defensive import guard
 
 
 def create_app(config: AppConfig = DEFAULT_CONFIG) -> FastAPI:
+    logger.info("Starting proof-of-heat FastAPI app")
     config.ensure_data_dir()
+
+    logger.debug("Data directory ready at %s", config.data_dir)
 
     history_file = Path(config.data_dir) / "history.csv"
     miner = Whatsminer(cli_path=config.miner.cli_path, host=config.miner.host)
@@ -209,22 +233,6 @@ def create_app(config: AppConfig = DEFAULT_CONFIG) -> FastAPI:
 
     return app
 
-
-def _diagnostic_app(error: Exception):  # pragma: no cover - defensive fallback
-    async def app(scope, receive, send):
-        if scope.get("type") != "http":
-            await send({"type": "http.response.start", "status": 500, "headers": []})
-            await send({"type": "http.response.body", "body": b"ASGI app unavailable"})
-            return
-
-        body = f"proof-of-heat failed to start: {error}".encode()
-        headers = [(b"content-type", b"text/plain; charset=utf-8")]
-        await send({"type": "http.response.start", "status": 500, "headers": headers})
-        await send({"type": "http.response.body", "body": body})
-
-    return app
-
-
 def _safe_create_app() -> Any:
     """Create the FastAPI app but never leave it undefined.
 
@@ -234,11 +242,15 @@ def _safe_create_app() -> Any:
     """
 
     if _startup_error is not None:
+        logger.error("proof-of-heat failed during imports: %s", _startup_error)
         return _diagnostic_app(_startup_error)
 
     try:
-        return create_app()
+        app_instance = create_app()
+        logger.info("proof-of-heat app created successfully")
+        return app_instance
     except Exception as exc:  # pragma: no cover - defensive fallback
+        logger.exception("proof-of-heat failed to create the ASGI app: %s", exc)
         return _diagnostic_app(exc)
 
 
