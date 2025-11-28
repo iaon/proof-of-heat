@@ -59,11 +59,7 @@ def create_app(config: AppConfig = DEFAULT_CONFIG) -> FastAPI:
     def health() -> Dict[str, str]:
         return {"status": "ok"}
 
-    @app.get("/")
-    @app.get("/ui")
-    def ui() -> HTMLResponse:
-        return HTMLResponse(
-            """
+    ui_markup = """
             <!doctype html>
             <html lang=\"en\">
             <head>
@@ -190,7 +186,11 @@ def create_app(config: AppConfig = DEFAULT_CONFIG) -> FastAPI:
             </body>
             </html>
             """
-        )
+
+    @app.get("/", response_class=HTMLResponse, include_in_schema=False)
+    @app.get("/ui", response_class=HTMLResponse, include_in_schema=False)
+    def ui() -> HTMLResponse:
+        return HTMLResponse(ui_markup)
 
     @app.get("/status")
     def status() -> Dict[str, Any]:
