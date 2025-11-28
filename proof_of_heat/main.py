@@ -3,21 +3,21 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Dict
 
-try:  # Lazy import to allow a diagnostic ASGI fallback if FastAPI is missing
+_startup_error: Exception | None = None
+
+try:  # Lazy import to allow a diagnostic ASGI fallback if dependencies are missing
     from fastapi import FastAPI, HTTPException
     from fastapi.responses import HTMLResponse, JSONResponse
+    from proof_of_heat.config import DEFAULT_CONFIG, AppConfig
+    from proof_of_heat.plugins.base import human_readable_mode
+    from proof_of_heat.plugins.whatsminer import Whatsminer
+    from proof_of_heat.services.temperature_control import TemperatureController
 except Exception as exc:  # pragma: no cover - defensive import guard
     FastAPI = None  # type: ignore[assignment]
     HTTPException = Exception  # type: ignore[assignment]
     HTMLResponse = JSONResponse = None  # type: ignore[assignment]
-    _import_error = exc
-else:
-    _import_error = None
-
-from proof_of_heat.config import DEFAULT_CONFIG, AppConfig
-from proof_of_heat.plugins.base import human_readable_mode
-from proof_of_heat.plugins.whatsminer import Whatsminer
-from proof_of_heat.services.temperature_control import TemperatureController
+    DEFAULT_CONFIG = AppConfig = human_readable_mode = Whatsminer = TemperatureController = None  # type: ignore[assignment]
+    _startup_error = exc
 
 
 def create_app(config: AppConfig = DEFAULT_CONFIG) -> FastAPI:
@@ -233,8 +233,8 @@ def _safe_create_app() -> Any:
     exposes something instead of erroring with "Attribute app not found".
     """
 
-    if _import_error is not None:
-        return _diagnostic_app(_import_error)
+    if _startup_error is not None:
+        return _diagnostic_app(_startup_error)
 
     try:
         return create_app()
