@@ -12,11 +12,10 @@ an existing WhatsMiner CLI tool you already have.
 ## Run with Docker
 
 Build and run the service locally (the data directory is mounted for history
-persistence):
+persistence). Use `--build` to ensure the image is refreshed after code changes:
 
 ```bash
-docker compose build
-docker compose up
+docker compose up --build
 ```
 
 Alternatively, build the image without Compose:

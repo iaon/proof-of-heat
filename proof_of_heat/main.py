@@ -3,8 +3,16 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Dict
 
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import HTMLResponse, JSONResponse
+try:  # Lazy import to allow a diagnostic ASGI fallback if FastAPI is missing
+    from fastapi import FastAPI, HTTPException
+    from fastapi.responses import HTMLResponse, JSONResponse
+except Exception as exc:  # pragma: no cover - defensive import guard
+    FastAPI = None  # type: ignore[assignment]
+    HTTPException = Exception  # type: ignore[assignment]
+    HTMLResponse = JSONResponse = None  # type: ignore[assignment]
+    _import_error = exc
+else:
+    _import_error = None
 
 from proof_of_heat.config import DEFAULT_CONFIG, AppConfig
 from proof_of_heat.plugins.base import human_readable_mode
@@ -202,24 +210,36 @@ def create_app(config: AppConfig = DEFAULT_CONFIG) -> FastAPI:
     return app
 
 
-def _safe_create_app() -> FastAPI:
+def _diagnostic_app(error: Exception):  # pragma: no cover - defensive fallback
+    async def app(scope, receive, send):
+        if scope.get("type") != "http":
+            await send({"type": "http.response.start", "status": 500, "headers": []})
+            await send({"type": "http.response.body", "body": b"ASGI app unavailable"})
+            return
+
+        body = f"proof-of-heat failed to start: {error}".encode()
+        headers = [(b"content-type", b"text/plain; charset=utf-8")]
+        await send({"type": "http.response.start", "status": 500, "headers": headers})
+        await send({"type": "http.response.body", "body": body})
+
+    return app
+
+
+def _safe_create_app() -> Any:
     """Create the FastAPI app but never leave it undefined.
 
-    If initialization fails for any reason (e.g., bad config, missing CLI),
-    return a small diagnostics app so uvicorn still exposes something instead
-    of erroring with "Attribute app not found".
+    If initialization fails for any reason (e.g., bad config, missing CLI or even
+    missing FastAPI import), return a small diagnostics ASGI app so uvicorn still
+    exposes something instead of erroring with "Attribute app not found".
     """
+
+    if _import_error is not None:
+        return _diagnostic_app(_import_error)
 
     try:
         return create_app()
     except Exception as exc:  # pragma: no cover - defensive fallback
-        fallback = FastAPI(title="proof-of-heat MVP", version="0.1.0")
-
-        @fallback.get("/health")
-        def failed_health() -> Dict[str, str]:
-            return {"status": "error", "detail": str(exc)}
-
-        return fallback
+        return _diagnostic_app(exc)
 
 
 app: FastAPI = _safe_create_app()
