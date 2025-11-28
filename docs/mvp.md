@@ -47,6 +47,18 @@ Open the lightweight UI at `http://localhost:8000/ui` (or just `http://localhost
 - start/stop the miner
 - set a power limit
 
+## Testing
+
+Install the dependencies (plus `pytest`) and run the tests from the repo root:
+
+```bash
+python -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+pip install pytest
+pytest
+```
+
 ## Endpoints
 
 - `GET /health` — service status.
