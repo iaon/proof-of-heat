@@ -49,14 +49,16 @@ Open the lightweight UI at `http://localhost:8000/ui` (or just `http://localhost
 
 ## Testing
 
-Install the dependencies (plus `pytest`) and run the tests from the repo root:
+Install the dependencies (plus `pytest`) and run the tests from the repo root
+(the commands below set `PYTHONPATH` so imports resolve without an editable
+install):
 
 ```bash
 python -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 pip install pytest
-pytest
+PYTHONPATH=. pytest
 ```
 
 ## Endpoints
