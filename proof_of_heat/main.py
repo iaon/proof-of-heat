@@ -22,9 +22,147 @@ def _diagnostic_app(error: Exception):  # pragma: no cover - defensive fallback
     return app
 
 
+def _register_config_routes(app_instance: Any) -> None:
+    if not hasattr(app_instance, "router"):
+        return
+
+    existing_paths: set[str] = {route.path for route in app_instance.router.routes}
+    config_paths: set[str] = {"/config", "/config/", "/api/config"}
+
+    def _load_settings() -> Any:
+        try:
+            return load_settings()
+        except Exception as exc:
+            raise HTTPException(
+                status_code=500, detail=f"Failed to load settings: {exc}"
+            ) from exc
+
+    registered_paths: set[str] = set()
+
+    if "/config" not in existing_paths:
+        app_instance.add_api_route(
+            "/config",
+            lambda: HTMLResponse(CONFIG_MARKUP),
+            response_class=HTMLResponse,
+            include_in_schema=False,
+        )
+        registered_paths.add("/config")
+    if "/config/" not in existing_paths:
+        app_instance.add_api_route(
+            "/config/",
+            lambda: HTMLResponse(CONFIG_MARKUP),
+            response_class=HTMLResponse,
+            include_in_schema=False,
+        )
+        registered_paths.add("/config/")
+    if "/api/config" not in existing_paths:
+        def get_config() -> Dict[str, Any]:
+            settings = _load_settings()
+            settings.reload()
+            raw_yaml = load_settings_yaml()
+            return {"raw_yaml": raw_yaml, "parsed": serialize_settings(settings)}
+
+        app_instance.add_api_route("/api/config", get_config, methods=["GET"])
+        registered_paths.add("/api/config")
+
+        def update_config(payload: Dict[str, Any]) -> Dict[str, Any]:
+            raw_yaml = payload.get("raw_yaml")
+            if not isinstance(raw_yaml, str):
+                raise HTTPException(status_code=400, detail="raw_yaml must be a string")
+            parsed = save_settings_yaml(raw_yaml)
+            settings = _load_settings()
+            settings.reload()
+            return {"parsed": parsed}
+
+        app_instance.add_api_route("/api/config", update_config, methods=["POST"])
+        registered_paths.add("/api/config")
+
+    if registered_paths:
+        logger.info(
+            "Config routes registered: %s", ", ".join(sorted(registered_paths))
+        )
+
+
 app: Any = _diagnostic_app(Exception("proof-of-heat app not initialized"))
 logger = logging.getLogger("proof_of_heat")
 logging.basicConfig(level=logging.INFO)
+CONFIG_MARKUP = """
+        <!doctype html>
+        <html lang="en">
+        <head>
+            <meta charset="utf-8" />
+            <meta name="viewport" content="width=device-width, initial-scale=1" />
+            <title>proof-of-heat Configuration</title>
+            <style>
+                body { font-family: system-ui, sans-serif; margin: 24px; color: #0f172a; background: #f8fafc; }
+                h1 { margin-top: 0; }
+                textarea { width: 100%; min-height: 360px; padding: 12px; border-radius: 6px; border: 1px solid #cbd5e1; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; }
+                button { cursor: pointer; padding: 8px 12px; border: none; background: #2563eb; color: white; border-radius: 4px; }
+                .card { background: #fff; padding: 16px; border-radius: 8px; box-shadow: 0 1px 4px rgba(0,0,0,0.1); margin-bottom: 16px; }
+                .row { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+                .muted { color: #64748b; }
+                pre { background: #0f172a; color: #e2e8f0; padding: 12px; border-radius: 6px; overflow-x: auto; }
+            </style>
+        </head>
+        <body>
+            <h1>Configuration</h1>
+            <p class="muted">Edit integrations and devices. Saving will create a timestamped backup in the conf folder.</p>
+
+            <div class="card">
+                <div class="row" style="margin-bottom:8px;">
+                    <button id="load">Reload</button>
+                    <button id="save">Save</button>
+                </div>
+                <textarea id="settings"></textarea>
+            </div>
+
+            <div class="card">
+                <strong>Parsed preview</strong>
+                <pre id="preview">Loading...</pre>
+            </div>
+
+            <script>
+                const settingsEl = document.getElementById('settings');
+                const previewEl = document.getElementById('preview');
+
+                async function refreshPreview(data) {
+                    previewEl.textContent = JSON.stringify(data, null, 2);
+                }
+
+                async function loadSettings() {
+                    previewEl.textContent = 'Loading...';
+                    const res = await fetch('/api/config');
+                    const data = await res.json();
+                    if (!res.ok) {
+                        previewEl.textContent = 'Error: ' + (data.detail || 'Failed to load');
+                        return;
+                    }
+                    settingsEl.value = data.raw_yaml || '';
+                    await refreshPreview(data.parsed || {});
+                }
+
+                async function saveSettings() {
+                    const res = await fetch('/api/config', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ raw_yaml: settingsEl.value }),
+                    });
+                    const data = await res.json();
+                    if (res.ok) {
+                        await refreshPreview(data.parsed || {});
+                    } else {
+                        previewEl.textContent = 'Error: ' + (data.detail || 'Failed to save');
+                    }
+                }
+
+                document.getElementById('load').addEventListener('click', loadSettings);
+                document.getElementById('save').addEventListener('click', saveSettings);
+
+                loadSettings();
+            </script>
+        </body>
+        </html>
+        """
 
 try:  # Lazy import to allow a diagnostic ASGI fallback if dependencies are missing
     from fastapi import FastAPI, HTTPException
@@ -200,117 +338,7 @@ def create_app(config: AppConfig = DEFAULT_CONFIG) -> FastAPI:
     def ui() -> HTMLResponse:
         return HTMLResponse(ui_markup)
 
-    config_markup = """
-            <!doctype html>
-            <html lang="en">
-            <head>
-                <meta charset="utf-8" />
-                <meta name="viewport" content="width=device-width, initial-scale=1" />
-                <title>proof-of-heat Configuration</title>
-                <style>
-                    body { font-family: system-ui, sans-serif; margin: 24px; color: #0f172a; background: #f8fafc; }
-                    h1 { margin-top: 0; }
-                    textarea { width: 100%; min-height: 360px; padding: 12px; border-radius: 6px; border: 1px solid #cbd5e1; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; }
-                    button { cursor: pointer; padding: 8px 12px; border: none; background: #2563eb; color: white; border-radius: 4px; }
-                    .card { background: #fff; padding: 16px; border-radius: 8px; box-shadow: 0 1px 4px rgba(0,0,0,0.1); margin-bottom: 16px; }
-                    .row { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
-                    .muted { color: #64748b; }
-                    pre { background: #0f172a; color: #e2e8f0; padding: 12px; border-radius: 6px; overflow-x: auto; }
-                </style>
-            </head>
-            <body>
-                <h1>Configuration</h1>
-                <p class="muted">Edit integrations and devices. Saving will create a timestamped backup in the conf folder.</p>
-
-                <div class="card">
-                    <div class="row" style="margin-bottom:8px;">
-                        <button id="load">Reload</button>
-                        <button id="save">Save</button>
-                    </div>
-                    <textarea id="settings"></textarea>
-                </div>
-
-                <div class="card">
-                    <strong>Parsed preview</strong>
-                    <pre id="preview">Loading...</pre>
-                </div>
-
-                <script>
-                    const settingsEl = document.getElementById('settings');
-                    const previewEl = document.getElementById('preview');
-
-                    async function refreshPreview(data) {
-                        previewEl.textContent = JSON.stringify(data, null, 2);
-                    }
-
-                    async function loadSettings() {
-                        previewEl.textContent = 'Loading...';
-                        const res = await fetch('/api/config');
-                        const data = await res.json();
-                        if (!res.ok) {
-                            previewEl.textContent = 'Error: ' + (data.detail || 'Failed to load');
-                            return;
-                        }
-                        settingsEl.value = data.raw_yaml || '';
-                        await refreshPreview(data.parsed || {});
-                    }
-
-                    async function saveSettings() {
-                        const res = await fetch('/api/config', {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ raw_yaml: settingsEl.value }),
-                        });
-                        const data = await res.json();
-                        if (res.ok) {
-                            await refreshPreview(data.parsed || {});
-                        } else {
-                            previewEl.textContent = 'Error: ' + (data.detail || 'Failed to save');
-                        }
-                    }
-
-                    document.getElementById('load').addEventListener('click', loadSettings);
-                    document.getElementById('save').addEventListener('click', saveSettings);
-
-                    loadSettings();
-                </script>
-            </body>
-            </html>
-            """
-
-    def _register_config_routes() -> None:
-        def _load_settings() -> Any:
-            try:
-                return load_settings()
-            except Exception as exc:
-                raise HTTPException(
-                    status_code=500, detail=f"Failed to load settings: {exc}"
-                ) from exc
-
-        @app.get("/config", response_class=HTMLResponse, include_in_schema=False)
-        @app.get("/config/", response_class=HTMLResponse, include_in_schema=False)
-        def config_editor() -> HTMLResponse:
-            return HTMLResponse(config_markup)
-
-        @app.get("/api/config")
-        def get_config() -> Dict[str, Any]:
-            settings = _load_settings()
-            settings.reload()
-            raw_yaml = load_settings_yaml()
-            return {"raw_yaml": raw_yaml, "parsed": serialize_settings(settings)}
-
-        @app.post("/api/config")
-        def update_config(payload: Dict[str, Any]) -> Dict[str, Any]:
-            raw_yaml = payload.get("raw_yaml")
-            if not isinstance(raw_yaml, str):
-                raise HTTPException(status_code=400, detail="raw_yaml must be a string")
-            parsed = save_settings_yaml(raw_yaml)
-            settings = _load_settings()
-            settings.reload()
-            return {"parsed": parsed}
-
-    _register_config_routes()
-    app.state.register_config_routes = _register_config_routes
+    _register_config_routes(app)
 
     @app.get("/status")
     def status() -> Dict[str, Any]:
@@ -377,13 +405,7 @@ def _safe_create_app() -> Any:
 app: FastAPI = _safe_create_app()
 
 if hasattr(app, "router"):
-    config_paths = {"/config", "/config/", "/api/config"}
-    existing_paths = {route.path for route in app.router.routes}
-    register_config_routes = getattr(
-        getattr(app, "state", None), "register_config_routes", None
-    )
-    if not config_paths.issubset(existing_paths) and callable(register_config_routes):
-        register_config_routes()
+    _register_config_routes(app)
 
 
 def run() -> None:
