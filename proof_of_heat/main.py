@@ -143,6 +143,15 @@ def create_app(config: AppConfig = DEFAULT_CONFIG) -> FastAPI:
     def health() -> Dict[str, str]:
         return {"status": "ok"}
 
+    @app.on_event("startup")
+    async def log_routes() -> None:
+        route_paths = sorted({route.path for route in app.router.routes})
+        logger.info("Available routes: %s", ", ".join(route_paths))
+
+    @app.get("/debug/routes")
+    def debug_routes() -> Dict[str, Any]:
+        return {"routes": sorted({route.path for route in app.router.routes})}
+
     ui_markup = """
             <!doctype html>
             <html lang=\"en\">
