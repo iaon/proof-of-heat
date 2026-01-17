@@ -14,3 +14,4 @@ devices:
       login: "login"
       password: "pass"
       host: "example.com"
+      port: 1111
