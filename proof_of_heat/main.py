@@ -32,12 +32,19 @@ try:  # Lazy import to allow a diagnostic ASGI fallback if dependencies are miss
     from proof_of_heat.config import DEFAULT_CONFIG, AppConfig
     from proof_of_heat.plugins.base import human_readable_mode
     from proof_of_heat.plugins.whatsminer import Whatsminer
+    from proof_of_heat.settings import (
+        load_settings,
+        load_settings_yaml,
+        save_settings_yaml,
+        serialize_settings,
+    )
     from proof_of_heat.services.temperature_control import TemperatureController
 except Exception as exc:  # pragma: no cover - defensive import guard
     FastAPI = None  # type: ignore[assignment]
     HTTPException = Exception  # type: ignore[assignment]
     HTMLResponse = JSONResponse = None  # type: ignore[assignment]
     DEFAULT_CONFIG = AppConfig = human_readable_mode = Whatsminer = TemperatureController = None  # type: ignore[assignment]
+    load_settings = load_settings_yaml = save_settings_yaml = serialize_settings = None  # type: ignore[assignment]
     _startup_error = exc
 
 
@@ -46,6 +53,8 @@ def create_app(config: AppConfig = DEFAULT_CONFIG) -> FastAPI:
     config.ensure_data_dir()
 
     logger.debug("Data directory ready at %s", config.data_dir)
+
+    settings = load_settings()
 
     history_file = Path(config.data_dir) / "history.csv"
     miner = Whatsminer(cli_path=config.miner.cli_path, host=config.miner.host)
@@ -81,6 +90,7 @@ def create_app(config: AppConfig = DEFAULT_CONFIG) -> FastAPI:
             </head>
             <body>
                 <h1>proof-of-heat MVP</h1>
+                <p><a href="/config">Edit configuration</a></p>
                 <p class=\"muted\">Quick control panel for the miner-backed heating MVP. Data refreshes live on load and whenever you click refresh.</p>
 
                 <div class=\"card\">
@@ -191,6 +201,102 @@ def create_app(config: AppConfig = DEFAULT_CONFIG) -> FastAPI:
     @app.get("/ui", response_class=HTMLResponse, include_in_schema=False)
     def ui() -> HTMLResponse:
         return HTMLResponse(ui_markup)
+
+    config_markup = """
+            <!doctype html>
+            <html lang="en">
+            <head>
+                <meta charset="utf-8" />
+                <meta name="viewport" content="width=device-width, initial-scale=1" />
+                <title>proof-of-heat Configuration</title>
+                <style>
+                    body { font-family: system-ui, sans-serif; margin: 24px; color: #0f172a; background: #f8fafc; }
+                    h1 { margin-top: 0; }
+                    textarea { width: 100%; min-height: 360px; padding: 12px; border-radius: 6px; border: 1px solid #cbd5e1; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; }
+                    button { cursor: pointer; padding: 8px 12px; border: none; background: #2563eb; color: white; border-radius: 4px; }
+                    .card { background: #fff; padding: 16px; border-radius: 8px; box-shadow: 0 1px 4px rgba(0,0,0,0.1); margin-bottom: 16px; }
+                    .row { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+                    .muted { color: #64748b; }
+                    pre { background: #0f172a; color: #e2e8f0; padding: 12px; border-radius: 6px; overflow-x: auto; }
+                </style>
+            </head>
+            <body>
+                <h1>Configuration</h1>
+                <p class="muted">Edit integrations and devices. Saving will create a timestamped backup in the conf folder.</p>
+
+                <div class="card">
+                    <div class="row" style="margin-bottom:8px;">
+                        <button id="load">Reload</button>
+                        <button id="save">Save</button>
+                    </div>
+                    <textarea id="settings"></textarea>
+                </div>
+
+                <div class="card">
+                    <strong>Parsed preview</strong>
+                    <pre id="preview">Loading...</pre>
+                </div>
+
+                <script>
+                    const settingsEl = document.getElementById('settings');
+                    const previewEl = document.getElementById('preview');
+
+                    async function refreshPreview(data) {
+                        previewEl.textContent = JSON.stringify(data, null, 2);
+                    }
+
+                    async function loadSettings() {
+                        previewEl.textContent = 'Loading...';
+                        const res = await fetch('/api/config');
+                        const data = await res.json();
+                        settingsEl.value = data.raw_yaml || '';
+                        await refreshPreview(data.parsed || {});
+                    }
+
+                    async function saveSettings() {
+                        const res = await fetch('/api/config', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ raw_yaml: settingsEl.value }),
+                        });
+                        const data = await res.json();
+                        if (res.ok) {
+                            await refreshPreview(data.parsed || {});
+                        } else {
+                            previewEl.textContent = 'Error: ' + (data.detail || 'Failed to save');
+                        }
+                    }
+
+                    document.getElementById('load').addEventListener('click', loadSettings);
+                    document.getElementById('save').addEventListener('click', saveSettings);
+
+                    loadSettings();
+                </script>
+            </body>
+            </html>
+            """
+
+    @app.get("/config", response_class=HTMLResponse, include_in_schema=False)
+    def config_editor() -> HTMLResponse:
+        return HTMLResponse(config_markup)
+
+    @app.get("/api/config")
+    def get_config() -> Dict[str, Any]:
+        settings.reload()
+        raw_yaml = load_settings_yaml()
+        return {
+            "raw_yaml": raw_yaml,
+            "parsed": serialize_settings(settings),
+        }
+
+    @app.post("/api/config")
+    def update_config(payload: Dict[str, Any]) -> Dict[str, Any]:
+        raw_yaml = payload.get("raw_yaml")
+        if not isinstance(raw_yaml, str):
+            raise HTTPException(status_code=400, detail="raw_yaml must be a string")
+        parsed = save_settings_yaml(raw_yaml)
+        settings.reload()
+        return {"parsed": parsed}
 
     @app.get("/status")
     def status() -> Dict[str, Any]:

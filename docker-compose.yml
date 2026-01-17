@@ -5,6 +5,7 @@ services:
       - "8000:8000"
     volumes:
       - ./data:/app/data
+      - ./conf:/app/conf
     environment:
       - PYTHONUNBUFFERED=1
     command: ["python", "-m", "proof_of_heat.main"]
