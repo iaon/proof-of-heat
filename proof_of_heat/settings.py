@@ -27,7 +27,9 @@ def load_settings() -> "Dynaconf":
     try:
         from dynaconf import Dynaconf
     except ImportError as exc:  # pragma: no cover - dependency guard
-        raise RuntimeError("Dynaconf is required to load settings.") from exc
+        fallback = _FallbackSettings(SETTINGS_FILE)
+        fallback.reload()
+        return fallback  # type: ignore[return-value]
     return Dynaconf(
         settings_files=[str(SETTINGS_FILE)],
         envvar_prefix="POH",
@@ -35,6 +37,21 @@ def load_settings() -> "Dynaconf":
         load_dotenv=True,
         merge_enabled=True,
     )
+
+
+class _FallbackSettings:
+    """Fallback settings loader when Dynaconf is unavailable."""
+
+    def __init__(self, settings_file: Path) -> None:
+        self._settings_file = settings_file
+        self._data: dict[str, Any] = {}
+
+    def reload(self) -> None:
+        raw_yaml = self._settings_file.read_text(encoding="utf-8")
+        self._data = parse_settings_yaml(raw_yaml)
+
+    def as_dict(self) -> dict[str, Any]:
+        return self._data
 
 
 def backup_settings_file() -> Path | None:
