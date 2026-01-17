@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 import logging
+from html import escape
 from pathlib import Path
 from typing import Any, Dict
 
@@ -132,7 +134,13 @@ def create_app(config: AppConfig = DEFAULT_CONFIG) -> FastAPI:
     logger.debug("Data directory ready at %s", config.data_dir)
 
     history_file = Path(config.data_dir) / "history.csv"
-    miner = Whatsminer(cli_path=config.miner.cli_path, host=config.miner.host)
+    miner = Whatsminer(
+        host=config.miner.host,
+        port=config.miner.port,
+        login=config.miner.login,
+        password=config.miner.password,
+        timeout=config.miner.timeout,
+    )
     controller = TemperatureController(
         config=config, miner=miner, history_file=history_file
     )
@@ -356,6 +364,68 @@ def create_app(config: AppConfig = DEFAULT_CONFIG) -> FastAPI:
     @app.post("/miner/power-limit")
     def set_power_limit(watts: int) -> Dict[str, Any]:
         return miner.set_power_limit(watts)
+
+    @app.get("/devices", response_class=HTMLResponse, include_in_schema=False)
+    @app.get("/devices/", response_class=HTMLResponse, include_in_schema=False)
+    def devices_view() -> HTMLResponse:
+        settings = _load_settings()
+        settings.reload()
+        settings_data = serialize_settings(settings)
+        devices = settings_data.get("devices", {}) if isinstance(settings_data, dict) else {}
+        zont_devices = devices.get("zont", []) if isinstance(devices, dict) else []
+        whatsminer_devices = devices.get("whatsminer", []) if isinstance(devices, dict) else []
+
+        cards = []
+        for device in zont_devices or []:
+            label = f"zont {device.get('device_id', 'unknown')}"
+            payload = {}
+            cards.append((label, payload))
+
+        for device in whatsminer_devices or []:
+            label = f"whatsminer {device.get('device_id', 'unknown')}"
+            instance = Whatsminer(
+                host=device.get("host"),
+                port=device.get("port", config.miner.port),
+                login=device.get("login"),
+                password=device.get("password"),
+                timeout=config.miner.timeout,
+            )
+            payload = instance.fetch_status()
+            cards.append((label, payload))
+
+        card_markup = ""
+        for label, payload in cards:
+            card_markup += (
+                "<div class=\"card\">"
+                f"<div class=\"row\"><strong>{escape(str(label))}</strong></div>"
+                f"<pre>{escape(json.dumps(payload, ensure_ascii=False, indent=2))}</pre>"
+                "</div>"
+            )
+
+        page_markup = f"""
+            <!doctype html>
+            <html lang="en">
+            <head>
+                <meta charset="utf-8" />
+                <meta name="viewport" content="width=device-width, initial-scale=1" />
+                <title>Devices</title>
+                <style>
+                    body {{ font-family: system-ui, sans-serif; margin: 24px; color: #0f172a; background: #f8fafc; }}
+                    h1 {{ margin-top: 0; }}
+                    .card {{ background: #fff; padding: 16px; border-radius: 8px; box-shadow: 0 1px 4px rgba(0,0,0,0.1); margin-bottom: 16px; }}
+                    .row {{ display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }}
+                    pre {{ background: #0f172a; color: #e2e8f0; padding: 12px; border-radius: 6px; overflow-x: auto; }}
+                    .muted {{ color: #64748b; }}
+                </style>
+            </head>
+            <body>
+                <h1>Devices</h1>
+                <p class="muted">Live status snapshot per device.</p>
+                {card_markup or '<p class="muted">No devices configured.</p>'}
+            </body>
+            </html>
+            """
+        return HTMLResponse(page_markup)
 
     return app
 

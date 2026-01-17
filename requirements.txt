@@ -5,3 +5,4 @@ httpx==0.27.0
 python-dotenv==1.0.1
 dynaconf==3.2.5
 PyYAML==6.0.2
+ya-whatsminer-cli @ git+https://github.com/iaon/ya-whatsminer-cli@v0.0.1
