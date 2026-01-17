@@ -5,17 +5,20 @@ from typing import Optional
 
 from pydantic import BaseModel, Field
 
+try:  # pragma: no cover - optional import guard
+    from whatsminer_cli import DEFAULT_PORT, DEFAULT_TIMEOUT
+except Exception:  # pragma: no cover - defensive fallback
+    DEFAULT_PORT = 4433
+    DEFAULT_TIMEOUT = 10
+
 
 class MinerConfig(BaseModel):
     name: str = "whatsminer"
-    cli_path: str = Field(
-        default="whatsminer",
-        description="Path to the WhatsMiner CLI tool that returns miner status.",
-    )
-    host: Optional[str] = Field(
-        default=None,
-        description="Optional host parameter passed to the CLI (if supported).",
-    )
+    host: Optional[str] = Field(default=None, description="Miner host address.")
+    port: int = Field(default=DEFAULT_PORT, description="Miner API port.")
+    login: Optional[str] = Field(default=None, description="Miner login account.")
+    password: Optional[str] = Field(default=None, description="Miner login password.")
+    timeout: int = Field(default=DEFAULT_TIMEOUT, description="API timeout (seconds).")
 
 
 class AppConfig(BaseModel):

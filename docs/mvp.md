@@ -2,17 +2,18 @@
 
 The current MVP is a FastAPI service that exposes a handful of endpoints to
 monitor and control a WhatsMiner-based heating setup. The miner is accessed via
-an existing WhatsMiner CLI tool you already have.
+the `ya-whatsminer-cli` Python library (Whatsminer API v3.0.1).
 
 ## Requirements
 
 - Python 3.11+
-- WhatsMiner CLI available in `$PATH` (or provide a path via config)
+- Whatsminer API v3.0.1 reachable from the host/container network.
 
 ## Run with Docker
 
 Build and run the service locally (the data directory is mounted for history
-persistence). Use `--build` to ensure the image is refreshed after code changes:
+persistence). Use `--build` to ensure the image is refreshed after code changes
+or dependency updates:
 
 ```bash
 docker compose up --build
@@ -25,9 +26,7 @@ docker build -t proof-of-heat .
 docker run --rm -p 8000:8000 -v $(pwd)/data:/app/data proof-of-heat
 ```
 
-Ensure the WhatsMiner CLI is available inside the container image (e.g., bake
-it into the image or mount the binary) and that the CLI can reach your miner on
-the network.
+Ensure the container can reach your miner on the network (same L2/L3 or VPN).
 
 ## Quick start
 
@@ -70,6 +69,7 @@ PYTHONPATH=. pytest
 - `POST /target-temperature?temp_c=23.5` — set target temperature.
 - `POST /miner/start` / `POST /miner/stop` — control the miner.
 - `POST /miner/power-limit?watts=3000` — adjust power draw.
+- `GET /devices` — simple HTML page with per-device JSON status blocks.
 
 ## Configuration
 
@@ -79,13 +79,13 @@ code-driven to keep things simple. Update the `DEFAULT_CONFIG` (or pass a custom
 
 - target temperature and mode
 - data directory for historical snapshots (`data/history.csv`)
-- path/host parameters for the WhatsMiner CLI
+- Whatsminer connection parameters (host/port/login/password/timeout)
 
 ## Notes
 
 - Snapshot persistence is a simple CSV writer for now; swap it with a proper
 time-series database when needed.
-- The WhatsMiner adapter just shells out to the CLI and returns JSON or raw
-output. Replace `_run` with richer parsing once CLI behaviour is finalized.
+- The WhatsMiner adapter uses the `ya-whatsminer-cli` library to call the
+  miner API directly.
 - There is intentionally no auth in the MVP — run behind a trusted network or
 reverse proxy until auth is added.

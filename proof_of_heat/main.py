@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 import logging
+from html import escape
 from pathlib import Path
 from typing import Any, Dict
 
@@ -110,10 +112,9 @@ try:  # Lazy import to allow a diagnostic ASGI fallback if dependencies are miss
     from proof_of_heat.plugins.base import human_readable_mode
     from proof_of_heat.plugins.whatsminer import Whatsminer
     from proof_of_heat.settings import (
-        load_settings,
         load_settings_yaml,
+        parse_settings_yaml,
         save_settings_yaml,
-        serialize_settings,
     )
     from proof_of_heat.services.temperature_control import TemperatureController
 except Exception as exc:  # pragma: no cover - defensive import guard
@@ -121,7 +122,7 @@ except Exception as exc:  # pragma: no cover - defensive import guard
     HTTPException = Exception  # type: ignore[assignment]
     HTMLResponse = JSONResponse = None  # type: ignore[assignment]
     DEFAULT_CONFIG = AppConfig = human_readable_mode = Whatsminer = TemperatureController = None  # type: ignore[assignment]
-    load_settings = load_settings_yaml = save_settings_yaml = serialize_settings = None  # type: ignore[assignment]
+    load_settings_yaml = parse_settings_yaml = save_settings_yaml = None  # type: ignore[assignment]
     _startup_error = exc
 
 
@@ -132,7 +133,13 @@ def create_app(config: AppConfig = DEFAULT_CONFIG) -> FastAPI:
     logger.debug("Data directory ready at %s", config.data_dir)
 
     history_file = Path(config.data_dir) / "history.csv"
-    miner = Whatsminer(cli_path=config.miner.cli_path, host=config.miner.host)
+    miner = Whatsminer(
+        host=config.miner.host,
+        port=config.miner.port,
+        login=config.miner.login,
+        password=config.miner.password,
+        timeout=config.miner.timeout,
+    )
     controller = TemperatureController(
         config=config, miner=miner, history_file=history_file
     )
@@ -286,14 +293,6 @@ def create_app(config: AppConfig = DEFAULT_CONFIG) -> FastAPI:
     def ui() -> HTMLResponse:
         return HTMLResponse(ui_markup)
 
-    def _load_settings() -> Any:
-        try:
-            return load_settings()
-        except Exception as exc:
-            raise HTTPException(
-                status_code=500, detail=f"Failed to load settings: {exc}"
-            ) from exc
-
     @app.get("/config", response_class=HTMLResponse, include_in_schema=False)
     @app.get("/config/", response_class=HTMLResponse, include_in_schema=False)
     def config_editor() -> HTMLResponse:
@@ -302,10 +301,9 @@ def create_app(config: AppConfig = DEFAULT_CONFIG) -> FastAPI:
     @app.get("/api/config")
     @app.get("/api/config/")
     def get_config() -> Dict[str, Any]:
-        settings = _load_settings()
-        settings.reload()
         raw_yaml = load_settings_yaml()
-        return {"raw_yaml": raw_yaml, "parsed": serialize_settings(settings)}
+        parsed = parse_settings_yaml(raw_yaml)
+        return {"raw_yaml": raw_yaml, "parsed": parsed}
 
     @app.post("/api/config")
     @app.post("/api/config/")
@@ -314,8 +312,6 @@ def create_app(config: AppConfig = DEFAULT_CONFIG) -> FastAPI:
         if not isinstance(raw_yaml, str):
             raise HTTPException(status_code=400, detail="raw_yaml must be a string")
         parsed = save_settings_yaml(raw_yaml)
-        settings = _load_settings()
-        settings.reload()
         return {"parsed": parsed}
 
     @app.get("/status")
@@ -356,6 +352,67 @@ def create_app(config: AppConfig = DEFAULT_CONFIG) -> FastAPI:
     @app.post("/miner/power-limit")
     def set_power_limit(watts: int) -> Dict[str, Any]:
         return miner.set_power_limit(watts)
+
+    @app.get("/devices", response_class=HTMLResponse, include_in_schema=False)
+    @app.get("/devices/", response_class=HTMLResponse, include_in_schema=False)
+    def devices_view() -> HTMLResponse:
+        raw_yaml = load_settings_yaml()
+        settings_data = parse_settings_yaml(raw_yaml)
+        devices = settings_data.get("devices", {}) if isinstance(settings_data, dict) else {}
+        zont_devices = devices.get("zont", []) if isinstance(devices, dict) else []
+        whatsminer_devices = devices.get("whatsminer", []) if isinstance(devices, dict) else []
+
+        cards = []
+        for device in zont_devices or []:
+            label = f"zont {device.get('device_id', 'unknown')}"
+            payload = {}
+            cards.append((label, payload))
+
+        for device in whatsminer_devices or []:
+            label = f"whatsminer {device.get('device_id', 'unknown')}"
+            instance = Whatsminer(
+                host=device.get("host"),
+                port=device.get("port", config.miner.port),
+                login=device.get("login"),
+                password=device.get("password"),
+                timeout=config.miner.timeout,
+            )
+            payload = instance.fetch_status()
+            cards.append((label, payload))
+
+        card_markup = ""
+        for label, payload in cards:
+            card_markup += (
+                "<div class=\"card\">"
+                f"<div class=\"row\"><strong>{escape(str(label))}</strong></div>"
+                f"<pre>{escape(json.dumps(payload, ensure_ascii=False, indent=2))}</pre>"
+                "</div>"
+            )
+
+        page_markup = f"""
+            <!doctype html>
+            <html lang="en">
+            <head>
+                <meta charset="utf-8" />
+                <meta name="viewport" content="width=device-width, initial-scale=1" />
+                <title>Devices</title>
+                <style>
+                    body {{ font-family: system-ui, sans-serif; margin: 24px; color: #0f172a; background: #f8fafc; }}
+                    h1 {{ margin-top: 0; }}
+                    .card {{ background: #fff; padding: 16px; border-radius: 8px; box-shadow: 0 1px 4px rgba(0,0,0,0.1); margin-bottom: 16px; }}
+                    .row {{ display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }}
+                    pre {{ background: #0f172a; color: #e2e8f0; padding: 12px; border-radius: 6px; overflow-x: auto; }}
+                    .muted {{ color: #64748b; }}
+                </style>
+            </head>
+            <body>
+                <h1>Devices</h1>
+                <p class="muted">Live status snapshot per device.</p>
+                {card_markup or '<p class="muted">No devices configured.</p>'}
+            </body>
+            </html>
+            """
+        return HTMLResponse(page_markup)
 
     return app
 
