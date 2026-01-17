@@ -112,10 +112,9 @@ try:  # Lazy import to allow a diagnostic ASGI fallback if dependencies are miss
     from proof_of_heat.plugins.base import human_readable_mode
     from proof_of_heat.plugins.whatsminer import Whatsminer
     from proof_of_heat.settings import (
-        load_settings,
         load_settings_yaml,
+        parse_settings_yaml,
         save_settings_yaml,
-        serialize_settings,
     )
     from proof_of_heat.services.temperature_control import TemperatureController
 except Exception as exc:  # pragma: no cover - defensive import guard
@@ -123,7 +122,7 @@ except Exception as exc:  # pragma: no cover - defensive import guard
     HTTPException = Exception  # type: ignore[assignment]
     HTMLResponse = JSONResponse = None  # type: ignore[assignment]
     DEFAULT_CONFIG = AppConfig = human_readable_mode = Whatsminer = TemperatureController = None  # type: ignore[assignment]
-    load_settings = load_settings_yaml = save_settings_yaml = serialize_settings = None  # type: ignore[assignment]
+    load_settings_yaml = parse_settings_yaml = save_settings_yaml = None  # type: ignore[assignment]
     _startup_error = exc
 
 
@@ -294,14 +293,6 @@ def create_app(config: AppConfig = DEFAULT_CONFIG) -> FastAPI:
     def ui() -> HTMLResponse:
         return HTMLResponse(ui_markup)
 
-    def _load_settings() -> Any:
-        try:
-            return load_settings()
-        except Exception as exc:
-            raise HTTPException(
-                status_code=500, detail=f"Failed to load settings: {exc}"
-            ) from exc
-
     @app.get("/config", response_class=HTMLResponse, include_in_schema=False)
     @app.get("/config/", response_class=HTMLResponse, include_in_schema=False)
     def config_editor() -> HTMLResponse:
@@ -310,10 +301,9 @@ def create_app(config: AppConfig = DEFAULT_CONFIG) -> FastAPI:
     @app.get("/api/config")
     @app.get("/api/config/")
     def get_config() -> Dict[str, Any]:
-        settings = _load_settings()
-        settings.reload()
         raw_yaml = load_settings_yaml()
-        return {"raw_yaml": raw_yaml, "parsed": serialize_settings(settings)}
+        parsed = parse_settings_yaml(raw_yaml)
+        return {"raw_yaml": raw_yaml, "parsed": parsed}
 
     @app.post("/api/config")
     @app.post("/api/config/")
@@ -322,8 +312,6 @@ def create_app(config: AppConfig = DEFAULT_CONFIG) -> FastAPI:
         if not isinstance(raw_yaml, str):
             raise HTTPException(status_code=400, detail="raw_yaml must be a string")
         parsed = save_settings_yaml(raw_yaml)
-        settings = _load_settings()
-        settings.reload()
         return {"parsed": parsed}
 
     @app.get("/status")
@@ -368,9 +356,8 @@ def create_app(config: AppConfig = DEFAULT_CONFIG) -> FastAPI:
     @app.get("/devices", response_class=HTMLResponse, include_in_schema=False)
     @app.get("/devices/", response_class=HTMLResponse, include_in_schema=False)
     def devices_view() -> HTMLResponse:
-        settings = _load_settings()
-        settings.reload()
-        settings_data = serialize_settings(settings)
+        raw_yaml = load_settings_yaml()
+        settings_data = parse_settings_yaml(raw_yaml)
         devices = settings_data.get("devices", {}) if isinstance(settings_data, dict) else {}
         zont_devices = devices.get("zont", []) if isinstance(devices, dict) else []
         whatsminer_devices = devices.get("whatsminer", []) if isinstance(devices, dict) else []
