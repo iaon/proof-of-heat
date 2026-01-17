@@ -22,67 +22,6 @@ def _diagnostic_app(error: Exception):  # pragma: no cover - defensive fallback
     return app
 
 
-def _register_config_routes(app_instance: Any) -> None:
-    if not hasattr(app_instance, "router"):
-        return
-
-    existing_paths: set[str] = {route.path for route in app_instance.router.routes}
-    config_paths: set[str] = {"/config", "/config/", "/api/config"}
-
-    def _load_settings() -> Any:
-        try:
-            return load_settings()
-        except Exception as exc:
-            raise HTTPException(
-                status_code=500, detail=f"Failed to load settings: {exc}"
-            ) from exc
-
-    registered_paths: set[str] = set()
-
-    if "/config" not in existing_paths:
-        app_instance.add_api_route(
-            "/config",
-            lambda: HTMLResponse(CONFIG_MARKUP),
-            response_class=HTMLResponse,
-            include_in_schema=False,
-        )
-        registered_paths.add("/config")
-    if "/config/" not in existing_paths:
-        app_instance.add_api_route(
-            "/config/",
-            lambda: HTMLResponse(CONFIG_MARKUP),
-            response_class=HTMLResponse,
-            include_in_schema=False,
-        )
-        registered_paths.add("/config/")
-    if "/api/config" not in existing_paths:
-        def get_config() -> Dict[str, Any]:
-            settings = _load_settings()
-            settings.reload()
-            raw_yaml = load_settings_yaml()
-            return {"raw_yaml": raw_yaml, "parsed": serialize_settings(settings)}
-
-        app_instance.add_api_route("/api/config", get_config, methods=["GET"])
-        registered_paths.add("/api/config")
-
-        def update_config(payload: Dict[str, Any]) -> Dict[str, Any]:
-            raw_yaml = payload.get("raw_yaml")
-            if not isinstance(raw_yaml, str):
-                raise HTTPException(status_code=400, detail="raw_yaml must be a string")
-            parsed = save_settings_yaml(raw_yaml)
-            settings = _load_settings()
-            settings.reload()
-            return {"parsed": parsed}
-
-        app_instance.add_api_route("/api/config", update_config, methods=["POST"])
-        registered_paths.add("/api/config")
-
-    if registered_paths:
-        logger.info(
-            "Config routes registered: %s", ", ".join(sorted(registered_paths))
-        )
-
-
 app: Any = _diagnostic_app(Exception("proof-of-heat app not initialized"))
 logger = logging.getLogger("proof_of_heat")
 logging.basicConfig(level=logging.INFO)
@@ -338,7 +277,37 @@ def create_app(config: AppConfig = DEFAULT_CONFIG) -> FastAPI:
     def ui() -> HTMLResponse:
         return HTMLResponse(ui_markup)
 
-    _register_config_routes(app)
+    def _load_settings() -> Any:
+        try:
+            return load_settings()
+        except Exception as exc:
+            raise HTTPException(
+                status_code=500, detail=f"Failed to load settings: {exc}"
+            ) from exc
+
+    @app.get("/config", response_class=HTMLResponse, include_in_schema=False)
+    @app.get("/config/", response_class=HTMLResponse, include_in_schema=False)
+    def config_editor() -> HTMLResponse:
+        return HTMLResponse(CONFIG_MARKUP)
+
+    @app.get("/api/config")
+    @app.get("/api/config/")
+    def get_config() -> Dict[str, Any]:
+        settings = _load_settings()
+        settings.reload()
+        raw_yaml = load_settings_yaml()
+        return {"raw_yaml": raw_yaml, "parsed": serialize_settings(settings)}
+
+    @app.post("/api/config")
+    @app.post("/api/config/")
+    def update_config(payload: Dict[str, Any]) -> Dict[str, Any]:
+        raw_yaml = payload.get("raw_yaml")
+        if not isinstance(raw_yaml, str):
+            raise HTTPException(status_code=400, detail="raw_yaml must be a string")
+        parsed = save_settings_yaml(raw_yaml)
+        settings = _load_settings()
+        settings.reload()
+        return {"parsed": parsed}
 
     @app.get("/status")
     def status() -> Dict[str, Any]:
@@ -403,9 +372,6 @@ def _safe_create_app() -> Any:
 
 
 app: FastAPI = _safe_create_app()
-
-if hasattr(app, "router"):
-    _register_config_routes(app)
 
 
 def run() -> None:
