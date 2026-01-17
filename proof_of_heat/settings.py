@@ -2,10 +2,12 @@ from __future__ import annotations
 
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import yaml
-from dynaconf import Dynaconf
+
+if TYPE_CHECKING:
+    from dynaconf import Dynaconf
 
 BASE_DIR = Path(__file__).resolve().parents[1]
 CONF_DIR = BASE_DIR / "conf"
@@ -20,8 +22,12 @@ def ensure_settings_file() -> None:
         SETTINGS_FILE.write_text(DEFAULT_SETTINGS_YAML, encoding="utf-8")
 
 
-def load_settings() -> Dynaconf:
+def load_settings() -> "Dynaconf":
     ensure_settings_file()
+    try:
+        from dynaconf import Dynaconf
+    except ImportError as exc:  # pragma: no cover - dependency guard
+        raise RuntimeError("Dynaconf is required to load settings.") from exc
     return Dynaconf(
         settings_files=[str(SETTINGS_FILE)],
         envvar_prefix="POH",
@@ -41,7 +47,9 @@ def backup_settings_file() -> Path | None:
     return backup_path
 
 
-def serialize_settings(settings: Dynaconf) -> dict[str, Any]:
+def serialize_settings(settings: Any) -> dict[str, Any]:
+    if not hasattr(settings, "as_dict"):
+        raise ValueError("Settings object does not support serialization.")
     return settings.as_dict()
 
 

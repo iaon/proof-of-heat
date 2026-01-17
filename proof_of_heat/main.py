@@ -54,8 +54,6 @@ def create_app(config: AppConfig = DEFAULT_CONFIG) -> FastAPI:
 
     logger.debug("Data directory ready at %s", config.data_dir)
 
-    settings = load_settings()
-
     history_file = Path(config.data_dir) / "history.csv"
     miner = Whatsminer(cli_path=config.miner.cli_path, host=config.miner.host)
     controller = TemperatureController(
@@ -249,6 +247,10 @@ def create_app(config: AppConfig = DEFAULT_CONFIG) -> FastAPI:
                         previewEl.textContent = 'Loading...';
                         const res = await fetch('/api/config');
                         const data = await res.json();
+                        if (!res.ok) {
+                            previewEl.textContent = 'Error: ' + (data.detail || 'Failed to load');
+                            return;
+                        }
                         settingsEl.value = data.raw_yaml || '';
                         await refreshPreview(data.parsed || {});
                     }
@@ -277,17 +279,24 @@ def create_app(config: AppConfig = DEFAULT_CONFIG) -> FastAPI:
             """
 
     @app.get("/config", response_class=HTMLResponse, include_in_schema=False)
+    @app.get("/config/", response_class=HTMLResponse, include_in_schema=False)
     def config_editor() -> HTMLResponse:
         return HTMLResponse(config_markup)
 
+    def _load_settings() -> Any:
+        try:
+            return load_settings()
+        except Exception as exc:
+            raise HTTPException(
+                status_code=500, detail=f"Failed to load settings: {exc}"
+            ) from exc
+
     @app.get("/api/config")
     def get_config() -> Dict[str, Any]:
+        settings = _load_settings()
         settings.reload()
         raw_yaml = load_settings_yaml()
-        return {
-            "raw_yaml": raw_yaml,
-            "parsed": serialize_settings(settings),
-        }
+        return {"raw_yaml": raw_yaml, "parsed": serialize_settings(settings)}
 
     @app.post("/api/config")
     def update_config(payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -295,6 +304,7 @@ def create_app(config: AppConfig = DEFAULT_CONFIG) -> FastAPI:
         if not isinstance(raw_yaml, str):
             raise HTTPException(status_code=400, detail="raw_yaml must be a string")
         parsed = save_settings_yaml(raw_yaml)
+        settings = _load_settings()
         settings.reload()
         return {"parsed": parsed}
 
