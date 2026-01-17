@@ -1,0 +1,16 @@
+integrations:
+  zont_api:
+    - id: 1
+      headers:
+        X-ZONT-Client: "your@email.com"
+      login: "login"
+      password: "password"
+devices:
+  zont:
+    - integration_id: 1
+      device_id: 12000
+  whatsminer:
+    - device_id: 1
+      login: "login"
+      password: "pass"
+      host: "example.com"
