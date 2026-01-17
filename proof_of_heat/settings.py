@@ -12,14 +12,20 @@ if TYPE_CHECKING:
 BASE_DIR = Path(__file__).resolve().parents[1]
 CONF_DIR = BASE_DIR / "conf"
 SETTINGS_FILE = CONF_DIR / "settings.yaml"
+SETTINGS_EXAMPLE_FILE = CONF_DIR / "settings.yaml.example"
 
-DEFAULT_SETTINGS_YAML = """integrations:\n  zont_api:\n    - id: 1\n      headers:\n        X-ZONT-Client: \"your@email.com\"\n      login: \"login\"\n      password: \"password\"\ndevices:\n  zont:\n    - integration_id: 1\n      device_id: 12000\n  whatsminer:\n    - device_id: 1\n      login: \"login\"\n      password: \"pass\"\n      host: \"example.com\"\n"""
+DEFAULT_SETTINGS_YAML = """integrations:\n  zont_api:\n    - id: 1\n      headers:\n        X-ZONT-Client: \"your@email.com\"\n      login: \"login\"\n      password: \"password\"\ndevices:\n  zont:\n    - integration_id: 1\n      device_id: 12000\n  whatsminer:\n    - device_id: 1\n      login: \"login\"\n      password: \"pass\"\n      host: \"example.com\"\n      port: 1111\n"""
 
 
 def ensure_settings_file() -> None:
     CONF_DIR.mkdir(parents=True, exist_ok=True)
+    if not SETTINGS_EXAMPLE_FILE.exists():
+        SETTINGS_EXAMPLE_FILE.write_text(DEFAULT_SETTINGS_YAML, encoding="utf-8")
     if not SETTINGS_FILE.exists():
-        SETTINGS_FILE.write_text(DEFAULT_SETTINGS_YAML, encoding="utf-8")
+        SETTINGS_FILE.write_text(
+            SETTINGS_EXAMPLE_FILE.read_text(encoding="utf-8"),
+            encoding="utf-8",
+        )
 
 
 def load_settings() -> "Dynaconf":
