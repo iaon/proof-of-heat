@@ -278,35 +278,39 @@ def create_app(config: AppConfig = DEFAULT_CONFIG) -> FastAPI:
             </html>
             """
 
-    @app.get("/config", response_class=HTMLResponse, include_in_schema=False)
-    @app.get("/config/", response_class=HTMLResponse, include_in_schema=False)
-    def config_editor() -> HTMLResponse:
-        return HTMLResponse(config_markup)
+    def _register_config_routes() -> None:
+        def _load_settings() -> Any:
+            try:
+                return load_settings()
+            except Exception as exc:
+                raise HTTPException(
+                    status_code=500, detail=f"Failed to load settings: {exc}"
+                ) from exc
 
-    def _load_settings() -> Any:
-        try:
-            return load_settings()
-        except Exception as exc:
-            raise HTTPException(
-                status_code=500, detail=f"Failed to load settings: {exc}"
-            ) from exc
+        @app.get("/config", response_class=HTMLResponse, include_in_schema=False)
+        @app.get("/config/", response_class=HTMLResponse, include_in_schema=False)
+        def config_editor() -> HTMLResponse:
+            return HTMLResponse(config_markup)
 
-    @app.get("/api/config")
-    def get_config() -> Dict[str, Any]:
-        settings = _load_settings()
-        settings.reload()
-        raw_yaml = load_settings_yaml()
-        return {"raw_yaml": raw_yaml, "parsed": serialize_settings(settings)}
+        @app.get("/api/config")
+        def get_config() -> Dict[str, Any]:
+            settings = _load_settings()
+            settings.reload()
+            raw_yaml = load_settings_yaml()
+            return {"raw_yaml": raw_yaml, "parsed": serialize_settings(settings)}
 
-    @app.post("/api/config")
-    def update_config(payload: Dict[str, Any]) -> Dict[str, Any]:
-        raw_yaml = payload.get("raw_yaml")
-        if not isinstance(raw_yaml, str):
-            raise HTTPException(status_code=400, detail="raw_yaml must be a string")
-        parsed = save_settings_yaml(raw_yaml)
-        settings = _load_settings()
-        settings.reload()
-        return {"parsed": parsed}
+        @app.post("/api/config")
+        def update_config(payload: Dict[str, Any]) -> Dict[str, Any]:
+            raw_yaml = payload.get("raw_yaml")
+            if not isinstance(raw_yaml, str):
+                raise HTTPException(status_code=400, detail="raw_yaml must be a string")
+            parsed = save_settings_yaml(raw_yaml)
+            settings = _load_settings()
+            settings.reload()
+            return {"parsed": parsed}
+
+    _register_config_routes()
+    app.state.register_config_routes = _register_config_routes
 
     @app.get("/status")
     def status() -> Dict[str, Any]:
@@ -371,6 +375,15 @@ def _safe_create_app() -> Any:
 
 
 app: FastAPI = _safe_create_app()
+
+if hasattr(app, "router"):
+    config_paths = {"/config", "/config/", "/api/config"}
+    existing_paths = {route.path for route in app.router.routes}
+    register_config_routes = getattr(
+        getattr(app, "state", None), "register_config_routes", None
+    )
+    if not config_paths.issubset(existing_paths) and callable(register_config_routes):
+        register_config_routes()
 
 
 def run() -> None:
