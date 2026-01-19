@@ -117,14 +117,17 @@ try:  # Lazy import to allow a diagnostic ASGI fallback if dependencies are miss
         save_settings_yaml,
     )
     from proof_of_heat.services.temperature_control import TemperatureController
-    from proof_of_heat.services.weather import fetch_open_meteo_weather
+    from proof_of_heat.services.weather import (
+        fetch_met_no_weather,
+        fetch_open_meteo_weather,
+    )
 except Exception as exc:  # pragma: no cover - defensive import guard
     FastAPI = None  # type: ignore[assignment]
     HTTPException = Exception  # type: ignore[assignment]
     HTMLResponse = JSONResponse = None  # type: ignore[assignment]
     DEFAULT_CONFIG = AppConfig = human_readable_mode = Whatsminer = TemperatureController = None  # type: ignore[assignment]
     load_settings_yaml = parse_settings_yaml = save_settings_yaml = None  # type: ignore[assignment]
-    fetch_open_meteo_weather = None  # type: ignore[assignment]
+    fetch_met_no_weather = fetch_open_meteo_weather = None  # type: ignore[assignment]
     _startup_error = exc
 
 
@@ -345,12 +348,14 @@ def create_app(config: AppConfig = DEFAULT_CONFIG) -> FastAPI:
             return None
         latitude = location.get("latitude")
         longitude = location.get("longitude")
+        altitude_m = location.get("altitude_m")
         if not isinstance(latitude, (int, float)) or not isinstance(longitude, (int, float)):
             return None
         return {
             "name": location.get("name"),
             "latitude": float(latitude),
             "longitude": float(longitude),
+            "altitude_m": int(altitude_m) if isinstance(altitude_m, (int, float)) else None,
             "timezone": location.get("timezone", "auto"),
         }
 
@@ -406,6 +411,22 @@ def create_app(config: AppConfig = DEFAULT_CONFIG) -> FastAPI:
                             latitude=location["latitude"],
                             longitude=location["longitude"],
                             timezone=location["timezone"],
+                        )
+                        weather_payload["priority"] = source["priority"]
+                        break
+                    except Exception as exc:  # pragma: no cover - network defensive fallback
+                        last_error = {
+                            "provider": provider,
+                            "error": str(exc),
+                            "priority": source["priority"],
+                        }
+                        continue
+                if provider == "met_no":
+                    try:
+                        weather_payload = fetch_met_no_weather(
+                            latitude=location["latitude"],
+                            longitude=location["longitude"],
+                            altitude_m=location.get("altitude_m"),
                         )
                         weather_payload["priority"] = source["priority"]
                         break

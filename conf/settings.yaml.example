@@ -8,6 +8,9 @@ integrations:
     - provider: "open_meteo"
       priority: 1
       enabled: true
+    - provider: "met_no"
+      priority: 2
+      enabled: true
   zont_api:
     - id: 1
       headers:
