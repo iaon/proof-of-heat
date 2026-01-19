@@ -81,6 +81,11 @@ code-driven to keep things simple. Update the `DEFAULT_CONFIG` (or pass a custom
 - data directory for historical snapshots (`data/history.csv`)
 - Whatsminer connection parameters (host/port/login/password/timeout)
 
+Weather and device metadata live in `conf/settings.yaml` (editable from `/config`).
+Update `location` (latitude/longitude) to enable current weather on the status
+page, and configure `integrations.weather` with one or more sources ordered by
+`priority` (lower number wins).
+
 ## Notes
 
 - Snapshot persistence is a simple CSV writer for now; swap it with a proper
