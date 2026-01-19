@@ -1,4 +1,16 @@
+location:
+  name: "Moscow"
+  latitude: 55.7558
+  longitude: 37.6173
+  timezone: "Europe/Moscow"
 integrations:
+  weather:
+    - provider: "open_meteo"
+      priority: 1
+      enabled: true
+    - provider: "met_no"
+      priority: 2
+      enabled: true
   zont_api:
     - id: 1
       headers:

@@ -117,12 +117,17 @@ try:  # Lazy import to allow a diagnostic ASGI fallback if dependencies are miss
         save_settings_yaml,
     )
     from proof_of_heat.services.temperature_control import TemperatureController
+    from proof_of_heat.services.weather import (
+        fetch_met_no_weather,
+        fetch_open_meteo_weather,
+    )
 except Exception as exc:  # pragma: no cover - defensive import guard
     FastAPI = None  # type: ignore[assignment]
     HTTPException = Exception  # type: ignore[assignment]
     HTMLResponse = JSONResponse = None  # type: ignore[assignment]
     DEFAULT_CONFIG = AppConfig = human_readable_mode = Whatsminer = TemperatureController = None  # type: ignore[assignment]
     load_settings_yaml = parse_settings_yaml = save_settings_yaml = None  # type: ignore[assignment]
+    fetch_met_no_weather = fetch_open_meteo_weather = None  # type: ignore[assignment]
     _startup_error = exc
 
 
@@ -194,6 +199,14 @@ def create_app(config: AppConfig = DEFAULT_CONFIG) -> FastAPI:
 
                 <div class=\"card\">
                     <div class=\"row\">
+                        <strong>Weather</strong>
+                        <span class=\"muted\" id=\"weather-location\"></span>
+                    </div>
+                    <pre id=\"weather\">Loading...</pre>
+                </div>
+
+                <div class=\"card\">
+                    <div class=\"row\">
                         <label for=\"target\">Target °C</label>
                         <input id=\"target\" type=\"number\" step=\"0.5\" min=\"5\" max=\"35\" />
                         <button id=\"apply-target\" class=\"secondary\">Set</button>
@@ -224,12 +237,16 @@ def create_app(config: AppConfig = DEFAULT_CONFIG) -> FastAPI:
 
                 <script>
                     const statusEl = document.getElementById('status');
+                    const weatherEl = document.getElementById('weather');
+                    const weatherLocationEl = document.getElementById('weather-location');
                     const targetEl = document.getElementById('target');
                     const modeEl = document.getElementById('mode');
                     const powerEl = document.getElementById('power');
 
                     async function loadStatus() {
                         statusEl.textContent = 'Loading...';
+                        weatherEl.textContent = 'Loading...';
+                        weatherLocationEl.textContent = '';
                         try {
                             const res = await fetch('/status');
                             const data = await res.json();
@@ -240,8 +257,17 @@ def create_app(config: AppConfig = DEFAULT_CONFIG) -> FastAPI:
                             if (data.mode) {
                                 modeEl.value = data.mode;
                             }
+                            if (data.weather) {
+                                weatherEl.textContent = JSON.stringify(data.weather, null, 2);
+                                if (data.weather.location && data.weather.location.name) {
+                                    weatherLocationEl.textContent = data.weather.location.name;
+                                }
+                            } else {
+                                weatherEl.textContent = 'No weather data configured.';
+                            }
                         } catch (err) {
                             statusEl.textContent = 'Failed to load status: ' + err;
+                            weatherEl.textContent = 'Failed to load weather: ' + err;
                         }
                     }
 
@@ -314,14 +340,119 @@ def create_app(config: AppConfig = DEFAULT_CONFIG) -> FastAPI:
         parsed = save_settings_yaml(raw_yaml)
         return {"parsed": parsed}
 
+    def _load_location(settings_data: Dict[str, Any]) -> Dict[str, Any] | None:
+        if not isinstance(settings_data, dict):
+            return None
+        location = settings_data.get("location")
+        if not isinstance(location, dict):
+            return None
+        latitude = location.get("latitude")
+        longitude = location.get("longitude")
+        altitude_m = location.get("altitude_m")
+        if not isinstance(latitude, (int, float)) or not isinstance(longitude, (int, float)):
+            return None
+        return {
+            "name": location.get("name"),
+            "latitude": float(latitude),
+            "longitude": float(longitude),
+            "altitude_m": int(altitude_m) if isinstance(altitude_m, (int, float)) else None,
+            "timezone": location.get("timezone", "auto"),
+        }
+
+    def _load_weather_sources(settings_data: Dict[str, Any]) -> list[Dict[str, Any]]:
+        if not isinstance(settings_data, dict):
+            return []
+        integrations = settings_data.get("integrations")
+        if not isinstance(integrations, dict):
+            return []
+        sources = integrations.get("weather")
+        if not isinstance(sources, list):
+            return []
+        normalized: list[Dict[str, Any]] = []
+        for source in sources:
+            if not isinstance(source, dict):
+                continue
+            provider = source.get("provider")
+            if not provider:
+                continue
+            priority = source.get("priority", 100)
+            enabled = bool(source.get("enabled", True))
+            try:
+                priority_value = int(priority)
+            except (TypeError, ValueError):
+                priority_value = 100
+            normalized.append(
+                {
+                    "provider": str(provider),
+                    "priority": priority_value,
+                    "enabled": enabled,
+                }
+            )
+        return sorted(normalized, key=lambda item: item["priority"])
+
     @app.get("/status")
     def status() -> Dict[str, Any]:
         miner_status = miner.fetch_status()
         snapshot = controller.record_snapshot(indoor_temp_c=21.0, miner_status=miner_status)
+        raw_yaml = load_settings_yaml()
+        settings_data = parse_settings_yaml(raw_yaml)
+        location = _load_location(settings_data)
+        weather_payload: Dict[str, Any] | None = None
+        if location:
+            sources = _load_weather_sources(settings_data)
+            last_error: Dict[str, Any] | None = None
+            for source in sources:
+                if not source["enabled"]:
+                    continue
+                provider = source["provider"]
+                if provider == "open_meteo":
+                    try:
+                        weather_payload = fetch_open_meteo_weather(
+                            latitude=location["latitude"],
+                            longitude=location["longitude"],
+                            timezone=location["timezone"],
+                        )
+                        weather_payload["priority"] = source["priority"]
+                        break
+                    except Exception as exc:  # pragma: no cover - network defensive fallback
+                        last_error = {
+                            "provider": provider,
+                            "error": str(exc),
+                            "priority": source["priority"],
+                        }
+                        continue
+                if provider == "met_no":
+                    try:
+                        weather_payload = fetch_met_no_weather(
+                            latitude=location["latitude"],
+                            longitude=location["longitude"],
+                            altitude_m=location.get("altitude_m"),
+                        )
+                        weather_payload["priority"] = source["priority"]
+                        break
+                    except Exception as exc:  # pragma: no cover - network defensive fallback
+                        last_error = {
+                            "provider": provider,
+                            "error": str(exc),
+                            "priority": source["priority"],
+                        }
+                        continue
+                else:
+                    last_error = {
+                        "provider": provider,
+                        "error": "Unsupported weather provider.",
+                        "priority": source["priority"],
+                    }
+                    continue
+            if weather_payload is None and last_error is not None:
+                weather_payload = last_error
+        if weather_payload is not None:
+            weather_payload = {"location": location, **weather_payload}
         return {
             "mode": config.mode,
             "mode_label": human_readable_mode(config.mode),
             "target_temperature_c": config.target_temperature_c,
+            "weather": weather_payload,
             "latest_snapshot": {
                 "timestamp": snapshot.timestamp,
                 "indoor_temp_c": snapshot.indoor_temp_c,
