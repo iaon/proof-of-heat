@@ -87,6 +87,38 @@ cd /opt/proof-of-heat
 git clone <repo_url> .
 ```
 
+#### 2.4 Включите HTTPS через Nginx + Let's Encrypt
+
+Woodpecker требует доступный **callback URL** снаружи, поэтому на сервере должны быть открыты порты `80` и `443`, а домен должен указывать на ваш сервер.
+
+1. Скопируйте пример конфигурации Nginx и замените домен:
+
+   - `conf/nginx/proof-of-heat.conf` → замените `<your-domain.example>` на ваш домен.
+
+2. Запустите Nginx и Certbot вместе с приложением:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.nginx.yml up -d
+```
+
+3. Выпустите первый сертификат:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.nginx.yml run --rm certbot \\
+  certonly --webroot -w /var/www/certbot \\
+  -d <your-domain.example> \\
+  --email <your-email@example.com> \\
+  --agree-tos --no-eff-email
+```
+
+4. Перезапустите Nginx, чтобы он подхватил сертификат:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.nginx.yml restart nginx
+```
+
+Certbot внутри Compose будет автоматически выполнять `renew` каждые 12 часов.
+
 ## Пример Woodpecker pipeline
 
 Добавьте файл `.woodpecker.yml` в корень репозитория. Он будет подключаться к серверу по SSH и запускать `docker compose up --build -d`.
