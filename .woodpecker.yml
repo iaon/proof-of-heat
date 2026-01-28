@@ -1,0 +1,24 @@
+when:
+  event: [push]
+  branch: [main]
+
+targets:
+  deploy:
+    steps:
+      - name: deploy
+        image: appleboy/ssh-action:latest
+        settings:
+          host:
+            from_secret: deploy_host
+          username:
+            from_secret: deploy_user
+          port:
+            from_secret: deploy_port
+          key:
+            from_secret: deploy_key
+          script: |
+            set -e
+            cd /opt/proof-of-heat
+            git fetch origin main
+            git reset --hard origin/main
+            docker compose up --build -d
