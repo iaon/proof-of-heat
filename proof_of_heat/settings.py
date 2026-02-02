@@ -14,7 +14,7 @@ CONF_DIR = BASE_DIR / "conf"
 SETTINGS_FILE = CONF_DIR / "settings.yaml"
 SETTINGS_EXAMPLE_FILE = CONF_DIR / "settings.yaml.example"
 
-DEFAULT_SETTINGS_YAML = """location:\n  name: \"Moscow\"\n  latitude: 55.7558\n  longitude: 37.6173\n  timezone: \"Europe/Moscow\"\nintegrations:\n  weather:\n    - provider: \"open_meteo\"\n      priority: 1\n      enabled: true\n    - provider: \"met_no\"\n      priority: 2\n      enabled: true\n  zont_api:\n    - id: 1\n      headers:\n        X-ZONT-Client: \"your@email.com\"\n      login: \"login\"\n      password: \"password\"\ndevices:\n  zont:\n    - integration_id: 1\n      device_id: 12000\n  whatsminer:\n    - device_id: 1\n      login: \"login\"\n      password: \"pass\"\n      host: \"example.com\"\n      port: 1111\n"""
+DEFAULT_SETTINGS_YAML = """location:\n  name: \"Moscow\"\n  latitude: 55.7558\n  longitude: 37.6173\n  timezone: \"Europe/Moscow\"\nintegrations:\n  weather:\n    - provider: \"open_meteo\"\n      priority: 1\n      enabled: true\n    - provider: \"met_no\"\n      priority: 2\n      enabled: true\n  zont_api:\n    - id: 1\n      headers:\n        X-ZONT-Client: \"your@email.com\"\n      login: \"login\"\n      password: \"password\"\ndevices:\n  refresh_interval: 30\n  zont:\n    - integration_id: 1\n      device_id: 12000\n  whatsminer:\n    - device_id: 1\n      login: \"login\"\n      password: \"pass\"\n      host: \"example.com\"\n      port: 1111\n"""
 
 
 def ensure_settings_file() -> None:

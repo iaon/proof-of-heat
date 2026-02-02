@@ -116,6 +116,7 @@ try:  # Lazy import to allow a diagnostic ASGI fallback if dependencies are miss
         parse_settings_yaml,
         save_settings_yaml,
     )
+    from proof_of_heat.services.device_polling import DevicePoller
     from proof_of_heat.services.temperature_control import TemperatureController
     from proof_of_heat.services.weather import (
         fetch_met_no_weather,
@@ -151,6 +152,10 @@ def create_app(config: AppConfig = DEFAULT_CONFIG) -> FastAPI:
 
     app = FastAPI(title="proof-of-heat MVP", version="0.1.0")
 
+    settings_data = parse_settings_yaml(load_settings_yaml())
+    device_poller = DevicePoller(settings_data)
+    app.state.device_poller = device_poller
+
     @app.get("/health")
     def health() -> Dict[str, str]:
         return {"status": "ok"}
@@ -159,6 +164,14 @@ def create_app(config: AppConfig = DEFAULT_CONFIG) -> FastAPI:
     async def log_routes() -> None:
         route_paths = sorted({route.path for route in app.router.routes})
         logger.info("Available routes: %s", ", ".join(route_paths))
+
+    @app.on_event("startup")
+    async def start_device_polling() -> None:
+        device_poller.start()
+
+    @app.on_event("shutdown")
+    async def stop_device_polling() -> None:
+        device_poller.shutdown()
 
     @app.get("/debug/routes")
     def debug_routes() -> Dict[str, Any]:
@@ -338,6 +351,7 @@ def create_app(config: AppConfig = DEFAULT_CONFIG) -> FastAPI:
         if not isinstance(raw_yaml, str):
             raise HTTPException(status_code=400, detail="raw_yaml must be a string")
         parsed = save_settings_yaml(raw_yaml)
+        device_poller.update_settings(parsed)
         return {"parsed": parsed}
 
     def _load_location(settings_data: Dict[str, Any]) -> Dict[str, Any] | None:
@@ -492,23 +506,20 @@ def create_app(config: AppConfig = DEFAULT_CONFIG) -> FastAPI:
         devices = settings_data.get("devices", {}) if isinstance(settings_data, dict) else {}
         zont_devices = devices.get("zont", []) if isinstance(devices, dict) else []
         whatsminer_devices = devices.get("whatsminer", []) if isinstance(devices, dict) else []
+        latest_payloads = device_poller.get_latest_payloads()
 
         cards = []
         for device in zont_devices or []:
             label = f"zont {device.get('device_id', 'unknown')}"
-            payload = {}
+            payload = latest_payloads.get(f"zont:{device.get('device_id', 'unknown')}", {})
             cards.append((label, payload))
 
         for device in whatsminer_devices or []:
             label = f"whatsminer {device.get('device_id', 'unknown')}"
-            instance = Whatsminer(
-                host=device.get("host"),
-                port=device.get("port", config.miner.port),
-                login=device.get("login"),
-                password=device.get("password"),
-                timeout=config.miner.timeout,
+            payload = latest_payloads.get(
+                f"whatsminer:{device.get('device_id', 'unknown')}",
+                {},
             )
-            payload = instance.fetch_status()
             cards.append((label, payload))
 
         card_markup = ""
