@@ -18,6 +18,7 @@ integrations:
       login: "login"
       password: "password"
 devices:
+  refresh_interval: 30
   zont:
     - integration_id: 1
       device_id: 12000
