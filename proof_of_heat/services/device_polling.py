@@ -73,6 +73,13 @@ class DevicePoller:
     def shutdown(self) -> None:
         if self._scheduler:
             self._scheduler.shutdown(wait=False)
+            self._scheduler = None
+
+    def update_settings(self, settings: dict[str, Any]) -> None:
+        self._settings = settings
+        if self._scheduler:
+            self.shutdown()
+            self.start()
 
     def get_latest_payloads(self) -> dict[str, dict[str, Any]]:
         with self._lock:

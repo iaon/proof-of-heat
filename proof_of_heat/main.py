@@ -351,6 +351,7 @@ def create_app(config: AppConfig = DEFAULT_CONFIG) -> FastAPI:
         if not isinstance(raw_yaml, str):
             raise HTTPException(status_code=400, detail="raw_yaml must be a string")
         parsed = save_settings_yaml(raw_yaml)
+        device_poller.update_settings(parsed)
         return {"parsed": parsed}
 
     def _load_location(settings_data: Dict[str, Any]) -> Dict[str, Any] | None:
