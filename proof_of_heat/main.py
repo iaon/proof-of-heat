@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from html import escape
 from pathlib import Path
 from typing import Any, Dict
@@ -24,9 +25,14 @@ def _diagnostic_app(error: Exception):  # pragma: no cover - defensive fallback
     return app
 
 
+def _resolve_log_level(value: str) -> int:
+    level = logging.getLevelName(value.upper())
+    return level if isinstance(level, int) else logging.INFO
+
+
 app: Any = _diagnostic_app(Exception("proof-of-heat app not initialized"))
 logger = logging.getLogger("proof_of_heat")
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=_resolve_log_level(os.getenv("LOG_LEVEL", "INFO")))
 CONFIG_MARKUP = """
         <!doctype html>
         <html lang="en">
