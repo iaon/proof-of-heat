@@ -4,3 +4,4 @@
 - Polling runs via APScheduler with per-device jobs (e.g. `CronTrigger(second="*/30")`).
 - Each device type has its own polling stub method that accepts an optional `request` parameter.
 - The latest polled data is stored per device for later access.
+- Configure logging verbosity with the `LOG_LEVEL` environment variable (defaults to `INFO`). Supported levels: `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`.

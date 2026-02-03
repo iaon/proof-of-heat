@@ -9,4 +9,5 @@ services:
       - ./proof_of_heat:/app/proof_of_heat
     environment:
       - PYTHONUNBUFFERED=1
+      - LOG_LEVEL=INFO
     command: ["python", "-m", "proof_of_heat.main"]
