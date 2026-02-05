@@ -159,7 +159,7 @@ def create_app(config: AppConfig = DEFAULT_CONFIG) -> FastAPI:
     app = FastAPI(title="proof-of-heat MVP", version="0.1.0")
 
     settings_data = parse_settings_yaml(load_settings_yaml())
-    device_poller = DevicePoller(settings_data)
+    device_poller = DevicePoller(settings_data, data_dir=config.data_dir)
     app.state.device_poller = device_poller
 
     @app.get("/health")
