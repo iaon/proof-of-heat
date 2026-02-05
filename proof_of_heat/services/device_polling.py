@@ -17,10 +17,10 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 from whatsminer_cli import DEFAULT_PORT, DEFAULT_TIMEOUT, call_whatsminer
 
+from proof_of_heat.logging_utils import TRACE_LEVEL, ensure_trace_level
+
+ensure_trace_level()
 logger = logging.getLogger("proof_of_heat.device_polling")
-TRACE_LEVEL = 5
-if not logging.getLevelName(TRACE_LEVEL) == "TRACE":
-    logging.addLevelName(TRACE_LEVEL, "TRACE")
 
 
 @dataclass(frozen=True)

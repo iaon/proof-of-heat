@@ -7,6 +7,8 @@ from html import escape
 from pathlib import Path
 from typing import Any, Dict
 
+from proof_of_heat.logging_utils import ensure_trace_level
+
 _startup_error: Exception | None = None
 
 
@@ -30,6 +32,7 @@ def _resolve_log_level(value: str) -> int:
     return level if isinstance(level, int) else logging.INFO
 
 
+ensure_trace_level()
 app: Any = _diagnostic_app(Exception("proof-of-heat app not initialized"))
 logger = logging.getLogger("proof_of_heat")
 logging.basicConfig(level=_resolve_log_level(os.getenv("LOG_LEVEL", "INFO")))
