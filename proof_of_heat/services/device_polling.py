@@ -18,6 +18,9 @@ from apscheduler.triggers.cron import CronTrigger
 from whatsminer_cli import DEFAULT_PORT, DEFAULT_TIMEOUT, call_whatsminer
 
 logger = logging.getLogger("proof_of_heat.device_polling")
+TRACE_LEVEL = 5
+if not logging.getLevelName(TRACE_LEVEL) == "TRACE":
+    logging.addLevelName(TRACE_LEVEL, "TRACE")
 
 
 @dataclass(frozen=True)
@@ -136,6 +139,7 @@ class DevicePoller:
                 "device_id": device.get("device_id"),
                 "host": host,
             }
+        logger.debug("Ping successful for Whatsminer host %s", host)
 
         login = device.get("login")
         password = device.get("password")
@@ -157,6 +161,8 @@ class DevicePoller:
                 "error": f"Whatsminer call failed: {exc}",
                 "device_id": device.get("device_id"),
             }
+        logger.debug("Whatsminer response code=%s for device %s", response.get("code"), device.get("device_id"))
+        logger.log(TRACE_LEVEL, "Whatsminer response payload: %s", response)
 
         if self._db_path:
             device_id = str(device.get("device_id", "unknown"))
