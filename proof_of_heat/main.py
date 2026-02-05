@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+from datetime import datetime, timezone
 from html import escape
 from pathlib import Path
 from typing import Any, Dict
@@ -208,7 +209,10 @@ def create_app(config: AppConfig = DEFAULT_CONFIG) -> FastAPI:
             </head>
             <body>
                 <h1>proof-of-heat MVP</h1>
-                <p><a href="/config">Edit configuration</a></p>
+                <p>
+                    <a href="/config">Edit configuration</a>
+                    · <a href="/metrics">Metrics chart</a>
+                </p>
                 <p class=\"muted\">Quick control panel for the miner-backed heating MVP. Data refreshes live on load and whenever you click refresh.</p>
 
                 <div class=\"card\">
@@ -335,6 +339,191 @@ def create_app(config: AppConfig = DEFAULT_CONFIG) -> FastAPI:
             </body>
             </html>
             """
+    metrics_markup = """
+            <!doctype html>
+            <html lang="en">
+            <head>
+                <meta charset="utf-8" />
+                <meta name="viewport" content="width=device-width, initial-scale=1" />
+                <title>Metrics chart</title>
+                <style>
+                    body { font-family: system-ui, sans-serif; margin: 24px; color: #0f172a; background: #f8fafc; }
+                    h1 { margin-top: 0; }
+                    .card { background: #fff; padding: 16px; border-radius: 8px; box-shadow: 0 1px 4px rgba(0,0,0,0.1); margin-bottom: 16px; }
+                    .row { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; }
+                    label { font-weight: 600; }
+                    select, input { padding: 6px 8px; border-radius: 4px; border: 1px solid #cbd5e1; }
+                    button { cursor: pointer; padding: 8px 12px; border: none; background: #2563eb; color: white; border-radius: 4px; }
+                    .muted { color: #64748b; }
+                    canvas { max-width: 100%; }
+                </style>
+                <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+            </head>
+            <body>
+                <h1>Metrics chart</h1>
+                <p class="muted">Select a device + metric to plot history over time.</p>
+
+                <div class="card">
+                    <div class="row" style="margin-bottom:12px;">
+                        <label for="device-type">Device type</label>
+                        <select id="device-type"></select>
+
+                        <label for="device-id">Device id</label>
+                        <select id="device-id"></select>
+
+                        <label for="metric">Metric</label>
+                        <select id="metric"></select>
+                    </div>
+                    <div class="row">
+                        <label for="start">Start</label>
+                        <input id="start" type="datetime-local" />
+                        <label for="end">End</label>
+                        <input id="end" type="datetime-local" />
+                        <button id="apply">Load</button>
+                    </div>
+                </div>
+
+                <div class="card">
+                    <canvas id="chart" height="120"></canvas>
+                    <p id="empty" class="muted"></p>
+                </div>
+
+                <script>
+                    const deviceTypeEl = document.getElementById('device-type');
+                    const deviceIdEl = document.getElementById('device-id');
+                    const metricEl = document.getElementById('metric');
+                    const startEl = document.getElementById('start');
+                    const endEl = document.getElementById('end');
+                    const emptyEl = document.getElementById('empty');
+                    const ctx = document.getElementById('chart').getContext('2d');
+                    let chart;
+
+                    function setOptions(select, options) {
+                        select.innerHTML = '';
+                        const placeholder = document.createElement('option');
+                        placeholder.value = '';
+                        placeholder.textContent = '—';
+                        select.appendChild(placeholder);
+                        options.forEach((item) => {
+                            const opt = document.createElement('option');
+                            opt.value = item;
+                            opt.textContent = item;
+                            select.appendChild(opt);
+                        });
+                    }
+
+                    function toInputValue(date) {
+                        const pad = (num) => String(num).padStart(2, '0');
+                        return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+                    }
+
+                    async function loadDeviceTypes() {
+                        const res = await fetch('/api/metrics/device-types');
+                        const data = await res.json();
+                        setOptions(deviceTypeEl, data.device_types || []);
+                    }
+
+                    async function loadDeviceIds() {
+                        const type = deviceTypeEl.value;
+                        if (!type) {
+                            setOptions(deviceIdEl, []);
+                            return;
+                        }
+                        const res = await fetch(`/api/metrics/device-ids?device_type=${encodeURIComponent(type)}`);
+                        const data = await res.json();
+                        setOptions(deviceIdEl, data.device_ids || []);
+                    }
+
+                    async function loadMetrics() {
+                        const type = deviceTypeEl.value;
+                        const id = deviceIdEl.value;
+                        if (!type || !id) {
+                            setOptions(metricEl, []);
+                            return;
+                        }
+                        const res = await fetch(`/api/metrics/metric-names?device_type=${encodeURIComponent(type)}&device_id=${encodeURIComponent(id)}`);
+                        const data = await res.json();
+                        setOptions(metricEl, data.metrics || []);
+                    }
+
+                    async function loadChart() {
+                        const type = deviceTypeEl.value;
+                        const id = deviceIdEl.value;
+                        const metric = metricEl.value;
+                        if (!type || !id || !metric) {
+                            return;
+                        }
+                        const start = startEl.value;
+                        const end = endEl.value;
+                        const params = new URLSearchParams({
+                            device_type: type,
+                            device_id: id,
+                            metric: metric,
+                        });
+                        if (start) {
+                            params.set('start', new Date(start).toISOString());
+                        }
+                        if (end) {
+                            params.set('end', new Date(end).toISOString());
+                        }
+                        const res = await fetch(`/api/metrics/data?${params.toString()}`);
+                        const data = await res.json();
+                        const points = data.points || [];
+                        const labels = points.map((point) => new Date(point.ts).toLocaleString());
+                        const values = points.map((point) => point.value);
+
+                        if (chart) {
+                            chart.destroy();
+                        }
+                        if (!points.length) {
+                            emptyEl.textContent = 'No data for the selected range.';
+                        } else {
+                            emptyEl.textContent = '';
+                        }
+                        chart = new Chart(ctx, {
+                            type: 'line',
+                            data: {
+                                labels: labels,
+                                datasets: [{
+                                    label: `${type} ${id} · ${metric}`,
+                                    data: values,
+                                    borderColor: '#2563eb',
+                                    backgroundColor: 'rgba(37, 99, 235, 0.15)',
+                                    tension: 0.25,
+                                    fill: true,
+                                }],
+                            },
+                            options: {
+                                responsive: true,
+                                scales: {
+                                    y: { beginAtZero: false },
+                                },
+                            },
+                        });
+                    }
+
+                    deviceTypeEl.addEventListener('change', async () => {
+                        await loadDeviceIds();
+                        await loadMetrics();
+                        loadChart();
+                    });
+                    deviceIdEl.addEventListener('change', async () => {
+                        await loadMetrics();
+                        loadChart();
+                    });
+                    metricEl.addEventListener('change', loadChart);
+                    document.getElementById('apply').addEventListener('click', loadChart);
+
+                    const now = new Date();
+                    const yesterday = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+                    startEl.value = toInputValue(yesterday);
+                    endEl.value = toInputValue(now);
+
+                    loadDeviceTypes();
+                </script>
+            </body>
+            </html>
+            """
 
     @app.get("/", response_class=HTMLResponse, include_in_schema=False)
     @app.get("/ui", response_class=HTMLResponse, include_in_schema=False)
@@ -345,6 +534,11 @@ def create_app(config: AppConfig = DEFAULT_CONFIG) -> FastAPI:
     @app.get("/config/", response_class=HTMLResponse, include_in_schema=False)
     def config_editor() -> HTMLResponse:
         return HTMLResponse(CONFIG_MARKUP)
+
+    @app.get("/metrics", response_class=HTMLResponse, include_in_schema=False)
+    @app.get("/metrics/", response_class=HTMLResponse, include_in_schema=False)
+    def metrics_view() -> HTMLResponse:
+        return HTMLResponse(metrics_markup)
 
     @app.get("/api/config")
     @app.get("/api/config/")
@@ -362,6 +556,55 @@ def create_app(config: AppConfig = DEFAULT_CONFIG) -> FastAPI:
         parsed = save_settings_yaml(raw_yaml)
         device_poller.update_settings(parsed)
         return {"parsed": parsed}
+
+    @app.get("/api/metrics/device-types")
+    def list_metric_device_types() -> Dict[str, list[str]]:
+        return {"device_types": device_poller.list_metric_device_types()}
+
+    @app.get("/api/metrics/device-ids")
+    def list_metric_device_ids(device_type: str) -> Dict[str, list[str]]:
+        if not device_type:
+            raise HTTPException(status_code=400, detail="device_type is required")
+        return {"device_ids": device_poller.list_metric_device_ids(device_type)}
+
+    @app.get("/api/metrics/metric-names")
+    def list_metric_names(device_type: str, device_id: str) -> Dict[str, list[str]]:
+        if not device_type or not device_id:
+            raise HTTPException(status_code=400, detail="device_type and device_id required")
+        return {"metrics": device_poller.list_metric_names(device_type, device_id)}
+
+    @app.get("/api/metrics/data")
+    def get_metric_data(
+        device_type: str,
+        device_id: str,
+        metric: str,
+        start: str | None = None,
+        end: str | None = None,
+    ) -> Dict[str, Any]:
+        if not device_type or not device_id or not metric:
+            raise HTTPException(status_code=400, detail="device_type, device_id, metric required")
+        start_ms = _parse_iso_datetime(start)
+        end_ms = _parse_iso_datetime(end)
+        points = device_poller.get_metric_series(
+            device_type=device_type,
+            device_id=device_id,
+            metric=metric,
+            start_ms=start_ms,
+            end_ms=end_ms,
+        )
+        return {"points": points}
+
+    def _parse_iso_datetime(value: str | None) -> int | None:
+        if not value:
+            return None
+        try:
+            cleaned = value.replace("Z", "+00:00")
+            dt = datetime.fromisoformat(cleaned)
+        except ValueError:
+            return None
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return int(dt.timestamp() * 1000)
 
     def _load_location(settings_data: Dict[str, Any]) -> Dict[str, Any] | None:
         if not isinstance(settings_data, dict):
