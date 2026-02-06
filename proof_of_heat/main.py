@@ -377,10 +377,14 @@ def create_app(config: AppConfig = DEFAULT_CONFIG) -> FastAPI:
                     <div class="row">
                         <label for="start-date">Start</label>
                         <input id="start-date" type="date" />
-                        <select id="start-time"></select>
+                        <input id="start-hour" type="number" min="0" max="23" placeholder="HH" />
+                        <input id="start-minute" type="number" min="0" max="59" placeholder="MM" />
+                        <input id="start-second" type="number" min="0" max="59" placeholder="SS" />
                         <label for="end-date">End</label>
                         <input id="end-date" type="date" />
-                        <select id="end-time"></select>
+                        <input id="end-hour" type="number" min="0" max="23" placeholder="HH" />
+                        <input id="end-minute" type="number" min="0" max="59" placeholder="MM" />
+                        <input id="end-second" type="number" min="0" max="59" placeholder="SS" />
                         <button id="apply">Load</button>
                     </div>
                 </div>
@@ -395,9 +399,13 @@ def create_app(config: AppConfig = DEFAULT_CONFIG) -> FastAPI:
                     const deviceIdEl = document.getElementById('device-id');
                     const metricEl = document.getElementById('metric');
                     const startDateEl = document.getElementById('start-date');
-                    const startTimeEl = document.getElementById('start-time');
+                    const startHourEl = document.getElementById('start-hour');
+                    const startMinuteEl = document.getElementById('start-minute');
+                    const startSecondEl = document.getElementById('start-second');
                     const endDateEl = document.getElementById('end-date');
-                    const endTimeEl = document.getElementById('end-time');
+                    const endHourEl = document.getElementById('end-hour');
+                    const endMinuteEl = document.getElementById('end-minute');
+                    const endSecondEl = document.getElementById('end-second');
                     const emptyEl = document.getElementById('empty');
                     const ctx = document.getElementById('chart').getContext('2d');
                     let chart;
@@ -421,25 +429,31 @@ def create_app(config: AppConfig = DEFAULT_CONFIG) -> FastAPI:
                         return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
                     }
 
-                    function toTimeValue(date) {
+                    function toTimeParts(date) {
                         const pad = (num) => String(num).padStart(2, '0');
-                        return `${pad(date.getHours())}:${pad(date.getMinutes())}`;
+                        return {
+                            hour: pad(date.getHours()),
+                            minute: pad(date.getMinutes()),
+                            second: pad(date.getSeconds()),
+                        };
                     }
 
-                    function parseDateTimeInput(dateValue, timeValue) {
-                        if (!dateValue || !timeValue) {
+                    function parseDateTimeInput(dateValue, hourValue, minuteValue, secondValue) {
+                        if (!dateValue) {
                             return null;
                         }
                         const [year, month, day] = dateValue.split('-').map(Number);
-                        const [hour, minute] = timeValue.split(':').map(Number);
-                        if ([year, month, day, hour, minute].some((item) => Number.isNaN(item))) {
+                        const hour = Number(hourValue);
+                        const minute = Number(minuteValue);
+                        const second = Number(secondValue);
+                        if ([year, month, day, hour, minute, second].some((item) => Number.isNaN(item))) {
                             return null;
                         }
-                        return new Date(year, month - 1, day, hour, minute, 0, 0);
+                        return new Date(year, month - 1, day, hour, minute, second, 0);
                     }
 
-                    function toIsoWithOffset(dateValue, timeValue) {
-                        const date = parseDateTimeInput(dateValue, timeValue);
+                    function toIsoWithOffset(dateValue, hourValue, minuteValue, secondValue) {
+                        const date = parseDateTimeInput(dateValue, hourValue, minuteValue, secondValue);
                         if (!date) {
                             return '';
                         }
@@ -463,19 +477,9 @@ def create_app(config: AppConfig = DEFAULT_CONFIG) -> FastAPI:
                         }).format(new Date(value));
                     }
 
-                    function parseLocalInputToMs(dateValue, timeValue) {
-                        const date = parseDateTimeInput(dateValue, timeValue);
+                    function parseLocalInputToMs(dateValue, hourValue, minuteValue, secondValue) {
+                        const date = parseDateTimeInput(dateValue, hourValue, minuteValue, secondValue);
                         return date ? date.getTime() : null;
-                    }
-
-                    function seedTimeOptions(select) {
-                        const options = [];
-                        for (let hour = 0; hour < 24; hour += 1) {
-                            for (let minute = 0; minute < 60; minute += 15) {
-                                options.push(`${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`);
-                            }
-                        }
-                        setOptions(select, options);
                     }
 
                     async function loadDeviceTypes() {
@@ -515,21 +519,25 @@ def create_app(config: AppConfig = DEFAULT_CONFIG) -> FastAPI:
                             return;
                         }
                         const startDate = startDateEl.value;
-                        const startTime = startTimeEl.value;
+                        const startHour = startHourEl.value;
+                        const startMinute = startMinuteEl.value;
+                        const startSecond = startSecondEl.value;
                         const endDate = endDateEl.value;
-                        const endTime = endTimeEl.value;
-                        const startMs = parseLocalInputToMs(startDate, startTime);
-                        const endMs = parseLocalInputToMs(endDate, endTime);
+                        const endHour = endHourEl.value;
+                        const endMinute = endMinuteEl.value;
+                        const endSecond = endSecondEl.value;
+                        const startMs = parseLocalInputToMs(startDate, startHour, startMinute, startSecond);
+                        const endMs = parseLocalInputToMs(endDate, endHour, endMinute, endSecond);
                         const params = new URLSearchParams({
                             device_type: type,
                             device_id: id,
                             metric: metric,
                         });
-                        if (startDate && startTime) {
-                            params.set('start', toIsoWithOffset(startDate, startTime));
+                        if (startDate) {
+                            params.set('start', toIsoWithOffset(startDate, startHour, startMinute, startSecond));
                         }
-                        if (endDate && endTime) {
-                            params.set('end', toIsoWithOffset(endDate, endTime));
+                        if (endDate) {
+                            params.set('end', toIsoWithOffset(endDate, endHour, endMinute, endSecond));
                         }
                         const res = await fetch(`/api/metrics/data?${params.toString()}`);
                         const data = await res.json();
@@ -611,12 +619,16 @@ def create_app(config: AppConfig = DEFAULT_CONFIG) -> FastAPI:
 
                     const now = new Date();
                     const yesterday = new Date(now.getTime() - 24 * 60 * 60 * 1000);
-                    seedTimeOptions(startTimeEl);
-                    seedTimeOptions(endTimeEl);
                     startDateEl.value = toDateInputValue(yesterday);
                     endDateEl.value = toDateInputValue(now);
-                    startTimeEl.value = toTimeValue(yesterday);
-                    endTimeEl.value = toTimeValue(now);
+                    const startParts = toTimeParts(yesterday);
+                    const endParts = toTimeParts(now);
+                    startHourEl.value = startParts.hour;
+                    startMinuteEl.value = startParts.minute;
+                    startSecondEl.value = startParts.second;
+                    endHourEl.value = endParts.hour;
+                    endMinuteEl.value = endParts.minute;
+                    endSecondEl.value = endParts.second;
 
                     loadDeviceTypes();
                 </script>
