@@ -376,9 +376,9 @@ def create_app(config: AppConfig = DEFAULT_CONFIG) -> FastAPI:
                     </div>
                     <div class="row">
                         <label for="start">Start</label>
-                        <input id="start" type="datetime-local" />
+                        <input id="start" type="text" inputmode="numeric" placeholder="YYYY-MM-DD HH:MM" />
                         <label for="end">End</label>
-                        <input id="end" type="datetime-local" />
+                        <input id="end" type="text" inputmode="numeric" placeholder="YYYY-MM-DD HH:MM" />
                         <button id="apply">Load</button>
                     </div>
                 </div>
@@ -414,15 +414,29 @@ def create_app(config: AppConfig = DEFAULT_CONFIG) -> FastAPI:
 
                     function toInputValue(date) {
                         const pad = (num) => String(num).padStart(2, '0');
-                        return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+                        return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+                    }
+
+                    function parseDateTimeInput(value) {
+                        if (!value) {
+                            return null;
+                        }
+                        const normalized = value.trim().replace('T', ' ');
+                        const [datePart, timePart] = normalized.split(' ');
+                        if (!datePart || !timePart) {
+                            return null;
+                        }
+                        const [year, month, day] = datePart.split('-').map(Number);
+                        const [hour, minute] = timePart.split(':').map(Number);
+                        if ([year, month, day, hour, minute].some((item) => Number.isNaN(item))) {
+                            return null;
+                        }
+                        return new Date(year, month - 1, day, hour, minute, 0, 0);
                     }
 
                     function toIsoWithOffset(value) {
-                        if (!value) {
-                            return '';
-                        }
-                        const date = new Date(value);
-                        if (Number.isNaN(date.getTime())) {
+                        const date = parseDateTimeInput(value);
+                        if (!date) {
                             return '';
                         }
                         const pad = (num) => String(num).padStart(2, '0');
@@ -446,14 +460,8 @@ def create_app(config: AppConfig = DEFAULT_CONFIG) -> FastAPI:
                     }
 
                     function parseLocalInputToMs(value) {
-                        if (!value) {
-                            return null;
-                        }
-                        const date = new Date(value);
-                        if (Number.isNaN(date.getTime())) {
-                            return null;
-                        }
-                        return date.getTime();
+                        const date = parseDateTimeInput(value);
+                        return date ? date.getTime() : null;
                     }
 
                     async function loadDeviceTypes() {
@@ -589,8 +597,6 @@ def create_app(config: AppConfig = DEFAULT_CONFIG) -> FastAPI:
                     const yesterday = new Date(now.getTime() - 24 * 60 * 60 * 1000);
                     startEl.value = toInputValue(yesterday);
                     endEl.value = toInputValue(now);
-                    startEl.setAttribute('lang', 'ru');
-                    endEl.setAttribute('lang', 'ru');
 
                     loadDeviceTypes();
                 </script>
