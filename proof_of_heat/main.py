@@ -341,7 +341,7 @@ def create_app(config: AppConfig = DEFAULT_CONFIG) -> FastAPI:
             """
     metrics_markup = """
             <!doctype html>
-            <html lang="en">
+            <html lang="ru">
             <head>
                 <meta charset="utf-8" />
                 <meta name="viewport" content="width=device-width, initial-scale=1" />
@@ -589,6 +589,8 @@ def create_app(config: AppConfig = DEFAULT_CONFIG) -> FastAPI:
                     const yesterday = new Date(now.getTime() - 24 * 60 * 60 * 1000);
                     startEl.value = toInputValue(yesterday);
                     endEl.value = toInputValue(now);
+                    startEl.setAttribute('lang', 'ru');
+                    endEl.setAttribute('lang', 'ru');
 
                     loadDeviceTypes();
                 </script>
