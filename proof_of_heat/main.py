@@ -375,10 +375,12 @@ def create_app(config: AppConfig = DEFAULT_CONFIG) -> FastAPI:
                         <select id="metric"></select>
                     </div>
                     <div class="row">
-                        <label for="start">Start</label>
-                        <input id="start" type="text" inputmode="numeric" placeholder="YYYY-MM-DD HH:MM" />
-                        <label for="end">End</label>
-                        <input id="end" type="text" inputmode="numeric" placeholder="YYYY-MM-DD HH:MM" />
+                        <label for="start-date">Start</label>
+                        <input id="start-date" type="date" />
+                        <select id="start-time"></select>
+                        <label for="end-date">End</label>
+                        <input id="end-date" type="date" />
+                        <select id="end-time"></select>
                         <button id="apply">Load</button>
                     </div>
                 </div>
@@ -392,8 +394,10 @@ def create_app(config: AppConfig = DEFAULT_CONFIG) -> FastAPI:
                     const deviceTypeEl = document.getElementById('device-type');
                     const deviceIdEl = document.getElementById('device-id');
                     const metricEl = document.getElementById('metric');
-                    const startEl = document.getElementById('start');
-                    const endEl = document.getElementById('end');
+                    const startDateEl = document.getElementById('start-date');
+                    const startTimeEl = document.getElementById('start-time');
+                    const endDateEl = document.getElementById('end-date');
+                    const endTimeEl = document.getElementById('end-time');
                     const emptyEl = document.getElementById('empty');
                     const ctx = document.getElementById('chart').getContext('2d');
                     let chart;
@@ -412,30 +416,30 @@ def create_app(config: AppConfig = DEFAULT_CONFIG) -> FastAPI:
                         });
                     }
 
-                    function toInputValue(date) {
+                    function toDateInputValue(date) {
                         const pad = (num) => String(num).padStart(2, '0');
-                        return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+                        return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
                     }
 
-                    function parseDateTimeInput(value) {
-                        if (!value) {
+                    function toTimeValue(date) {
+                        const pad = (num) => String(num).padStart(2, '0');
+                        return `${pad(date.getHours())}:${pad(date.getMinutes())}`;
+                    }
+
+                    function parseDateTimeInput(dateValue, timeValue) {
+                        if (!dateValue || !timeValue) {
                             return null;
                         }
-                        const normalized = value.trim().replace('T', ' ');
-                        const [datePart, timePart] = normalized.split(' ');
-                        if (!datePart || !timePart) {
-                            return null;
-                        }
-                        const [year, month, day] = datePart.split('-').map(Number);
-                        const [hour, minute] = timePart.split(':').map(Number);
+                        const [year, month, day] = dateValue.split('-').map(Number);
+                        const [hour, minute] = timeValue.split(':').map(Number);
                         if ([year, month, day, hour, minute].some((item) => Number.isNaN(item))) {
                             return null;
                         }
                         return new Date(year, month - 1, day, hour, minute, 0, 0);
                     }
 
-                    function toIsoWithOffset(value) {
-                        const date = parseDateTimeInput(value);
+                    function toIsoWithOffset(dateValue, timeValue) {
+                        const date = parseDateTimeInput(dateValue, timeValue);
                         if (!date) {
                             return '';
                         }
@@ -459,9 +463,19 @@ def create_app(config: AppConfig = DEFAULT_CONFIG) -> FastAPI:
                         }).format(new Date(value));
                     }
 
-                    function parseLocalInputToMs(value) {
-                        const date = parseDateTimeInput(value);
+                    function parseLocalInputToMs(dateValue, timeValue) {
+                        const date = parseDateTimeInput(dateValue, timeValue);
                         return date ? date.getTime() : null;
+                    }
+
+                    function seedTimeOptions(select) {
+                        const options = [];
+                        for (let hour = 0; hour < 24; hour += 1) {
+                            for (let minute = 0; minute < 60; minute += 15) {
+                                options.push(`${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`);
+                            }
+                        }
+                        setOptions(select, options);
                     }
 
                     async function loadDeviceTypes() {
@@ -500,20 +514,22 @@ def create_app(config: AppConfig = DEFAULT_CONFIG) -> FastAPI:
                         if (!type || !id || !metric) {
                             return;
                         }
-                        const start = startEl.value;
-                        const end = endEl.value;
-                        const startMs = parseLocalInputToMs(start);
-                        const endMs = parseLocalInputToMs(end);
+                        const startDate = startDateEl.value;
+                        const startTime = startTimeEl.value;
+                        const endDate = endDateEl.value;
+                        const endTime = endTimeEl.value;
+                        const startMs = parseLocalInputToMs(startDate, startTime);
+                        const endMs = parseLocalInputToMs(endDate, endTime);
                         const params = new URLSearchParams({
                             device_type: type,
                             device_id: id,
                             metric: metric,
                         });
-                        if (start) {
-                            params.set('start', toIsoWithOffset(start));
+                        if (startDate && startTime) {
+                            params.set('start', toIsoWithOffset(startDate, startTime));
                         }
-                        if (end) {
-                            params.set('end', toIsoWithOffset(end));
+                        if (endDate && endTime) {
+                            params.set('end', toIsoWithOffset(endDate, endTime));
                         }
                         const res = await fetch(`/api/metrics/data?${params.toString()}`);
                         const data = await res.json();
@@ -595,8 +611,12 @@ def create_app(config: AppConfig = DEFAULT_CONFIG) -> FastAPI:
 
                     const now = new Date();
                     const yesterday = new Date(now.getTime() - 24 * 60 * 60 * 1000);
-                    startEl.value = toInputValue(yesterday);
-                    endEl.value = toInputValue(now);
+                    seedTimeOptions(startTimeEl);
+                    seedTimeOptions(endTimeEl);
+                    startDateEl.value = toDateInputValue(yesterday);
+                    endDateEl.value = toDateInputValue(now);
+                    startTimeEl.value = toTimeValue(yesterday);
+                    endTimeEl.value = toTimeValue(now);
 
                     loadDeviceTypes();
                 </script>
