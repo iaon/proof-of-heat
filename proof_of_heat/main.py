@@ -445,6 +445,17 @@ def create_app(config: AppConfig = DEFAULT_CONFIG) -> FastAPI:
                         }).format(new Date(value));
                     }
 
+                    function parseLocalInputToMs(value) {
+                        if (!value) {
+                            return null;
+                        }
+                        const date = new Date(value);
+                        if (Number.isNaN(date.getTime())) {
+                            return null;
+                        }
+                        return date.getTime();
+                    }
+
                     async function loadDeviceTypes() {
                         const res = await fetch('/api/metrics/device-types');
                         const data = await res.json();
@@ -483,6 +494,8 @@ def create_app(config: AppConfig = DEFAULT_CONFIG) -> FastAPI:
                         }
                         const start = startEl.value;
                         const end = endEl.value;
+                        const startMs = parseLocalInputToMs(start);
+                        const endMs = parseLocalInputToMs(end);
                         const params = new URLSearchParams({
                             device_type: type,
                             device_id: id,
@@ -536,6 +549,8 @@ def create_app(config: AppConfig = DEFAULT_CONFIG) -> FastAPI:
                                 scales: {
                                     x: {
                                         type: 'linear',
+                                        min: startMs ?? undefined,
+                                        max: endMs ?? undefined,
                                         ticks: {
                                             callback: (value) => formatDateTime(value),
                                         },
