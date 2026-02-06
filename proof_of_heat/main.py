@@ -417,6 +417,34 @@ def create_app(config: AppConfig = DEFAULT_CONFIG) -> FastAPI:
                         return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
                     }
 
+                    function toIsoWithOffset(value) {
+                        if (!value) {
+                            return '';
+                        }
+                        const date = new Date(value);
+                        if (Number.isNaN(date.getTime())) {
+                            return '';
+                        }
+                        const pad = (num) => String(num).padStart(2, '0');
+                        const tzOffset = -date.getTimezoneOffset();
+                        const sign = tzOffset >= 0 ? '+' : '-';
+                        const offsetHours = pad(Math.floor(Math.abs(tzOffset) / 60));
+                        const offsetMinutes = pad(Math.abs(tzOffset) % 60);
+                        return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}${sign}${offsetHours}:${offsetMinutes}`;
+                    }
+
+                    function formatDateTime(value) {
+                        return new Intl.DateTimeFormat('ru-RU', {
+                            year: 'numeric',
+                            month: '2-digit',
+                            day: '2-digit',
+                            hour: '2-digit',
+                            minute: '2-digit',
+                            second: '2-digit',
+                            hour12: false,
+                        }).format(new Date(value));
+                    }
+
                     async function loadDeviceTypes() {
                         const res = await fetch('/api/metrics/device-types');
                         const data = await res.json();
@@ -461,10 +489,10 @@ def create_app(config: AppConfig = DEFAULT_CONFIG) -> FastAPI:
                             metric: metric,
                         });
                         if (start) {
-                            params.set('start', new Date(start).toISOString());
+                            params.set('start', toIsoWithOffset(start));
                         }
                         if (end) {
-                            params.set('end', new Date(end).toISOString());
+                            params.set('end', toIsoWithOffset(end));
                         }
                         const res = await fetch(`/api/metrics/data?${params.toString()}`);
                         const data = await res.json();
@@ -509,10 +537,22 @@ def create_app(config: AppConfig = DEFAULT_CONFIG) -> FastAPI:
                                     x: {
                                         type: 'linear',
                                         ticks: {
-                                            callback: (value) => new Date(value).toLocaleString(),
+                                            callback: (value) => formatDateTime(value),
                                         },
                                     },
                                     y: { beginAtZero: false },
+                                },
+                                plugins: {
+                                    tooltip: {
+                                        callbacks: {
+                                            title: (items) => {
+                                                if (!items.length) {
+                                                    return '';
+                                                }
+                                                return formatDateTime(items[0].parsed.x);
+                                            },
+                                        },
+                                    },
                                 },
                             },
                         });
