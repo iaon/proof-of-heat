@@ -470,20 +470,16 @@ def create_app(config: AppConfig = DEFAULT_CONFIG) -> FastAPI:
                         const data = await res.json();
                         const points = data.points || [];
                         const gapMs = 10 * 60 * 1000;
-                        const labels = [];
-                        const values = [];
+                        const series = [];
                         points.forEach((point, index) => {
                             const ts = point.ts;
                             if (index > 0) {
                                 const prevTs = points[index - 1].ts;
                                 if (ts - prevTs > gapMs) {
-                                    const gapLabel = new Date(prevTs + gapMs).toLocaleString();
-                                    labels.push(gapLabel);
-                                    values.push(null);
+                                    series.push({ x: prevTs + gapMs, y: null });
                                 }
                             }
-                            labels.push(new Date(ts).toLocaleString());
-                            values.push(point.value);
+                            series.push({ x: ts, y: point.value });
                         });
 
                         if (chart) {
@@ -497,19 +493,25 @@ def create_app(config: AppConfig = DEFAULT_CONFIG) -> FastAPI:
                         chart = new Chart(ctx, {
                             type: 'line',
                             data: {
-                                labels: labels,
                                 datasets: [{
                                     label: `${type} ${id} · ${metric}`,
-                                    data: values,
+                                    data: series,
                                     borderColor: '#2563eb',
                                     backgroundColor: 'rgba(37, 99, 235, 0.15)',
                                     tension: 0.25,
                                     fill: true,
+                                    spanGaps: false,
                                 }],
                             },
                             options: {
                                 responsive: true,
                                 scales: {
+                                    x: {
+                                        type: 'linear',
+                                        ticks: {
+                                            callback: (value) => new Date(value).toLocaleString(),
+                                        },
+                                    },
                                     y: { beginAtZero: false },
                                 },
                             },
