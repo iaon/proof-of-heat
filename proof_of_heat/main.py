@@ -469,8 +469,22 @@ def create_app(config: AppConfig = DEFAULT_CONFIG) -> FastAPI:
                         const res = await fetch(`/api/metrics/data?${params.toString()}`);
                         const data = await res.json();
                         const points = data.points || [];
-                        const labels = points.map((point) => new Date(point.ts).toLocaleString());
-                        const values = points.map((point) => point.value);
+                        const gapMs = 10 * 60 * 1000;
+                        const labels = [];
+                        const values = [];
+                        points.forEach((point, index) => {
+                            const ts = point.ts;
+                            if (index > 0) {
+                                const prevTs = points[index - 1].ts;
+                                if (ts - prevTs > gapMs) {
+                                    const gapLabel = new Date(prevTs + gapMs).toLocaleString();
+                                    labels.push(gapLabel);
+                                    values.push(null);
+                                }
+                            }
+                            labels.push(new Date(ts).toLocaleString());
+                            values.push(point.value);
+                        });
 
                         if (chart) {
                             chart.destroy();
