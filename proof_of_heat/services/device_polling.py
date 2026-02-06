@@ -100,6 +100,91 @@ class DevicePoller:
                 for key, payload in self._latest_payloads.items()
             }
 
+    def list_metric_device_types(self) -> list[str]:
+        if not self._db_path:
+            return []
+        with self._db_lock:
+            with sqlite3.connect(self._db_path) as conn:
+                self._ensure_tables(conn)
+                rows = conn.execute(
+                    "SELECT DISTINCT device_type FROM metrics ORDER BY device_type"
+                ).fetchall()
+        return [row[0] for row in rows if row and row[0]]
+
+    def list_metric_device_ids(self, device_type: str) -> list[str]:
+        if not self._db_path:
+            return []
+        with self._db_lock:
+            with sqlite3.connect(self._db_path) as conn:
+                self._ensure_tables(conn)
+                rows = conn.execute(
+                    """
+                    SELECT DISTINCT device_id
+                    FROM metrics
+                    WHERE device_type = :device_type
+                    ORDER BY device_id
+                    """,
+                    {"device_type": device_type},
+                ).fetchall()
+        return [row[0] for row in rows if row and row[0]]
+
+    def list_metric_names(self, device_type: str, device_id: str) -> list[str]:
+        if not self._db_path:
+            return []
+        with self._db_lock:
+            with sqlite3.connect(self._db_path) as conn:
+                self._ensure_tables(conn)
+                rows = conn.execute(
+                    """
+                    SELECT DISTINCT metric
+                    FROM metrics
+                    WHERE device_type = :device_type
+                      AND device_id = :device_id
+                    ORDER BY metric
+                    """,
+                    {"device_type": device_type, "device_id": device_id},
+                ).fetchall()
+        return [row[0] for row in rows if row and row[0]]
+
+    def get_metric_series(
+        self,
+        device_type: str,
+        device_id: str,
+        metric: str,
+        start_ms: int | None,
+        end_ms: int | None,
+    ) -> list[dict[str, Any]]:
+        if not self._db_path:
+            return []
+        params: dict[str, Any] = {
+            "device_type": device_type,
+            "device_id": device_id,
+            "metric": metric,
+        }
+        clauses = [
+            "device_type = :device_type",
+            "device_id = :device_id",
+            "metric = :metric",
+        ]
+        if start_ms is not None:
+            clauses.append("ts >= :start_ms")
+            params["start_ms"] = start_ms
+        if end_ms is not None:
+            clauses.append("ts <= :end_ms")
+            params["end_ms"] = end_ms
+        where_clause = " AND ".join(clauses)
+        query = f"""
+            SELECT ts, value
+            FROM metrics
+            WHERE {where_clause}
+            ORDER BY ts
+        """
+        with self._db_lock:
+            with sqlite3.connect(self._db_path) as conn:
+                self._ensure_tables(conn)
+                rows = conn.execute(query, params).fetchall()
+        return [{"ts": int(ts), "value": float(value)} for ts, value in rows]
+
     def _poll_device(
         self,
         key: DeviceKey,

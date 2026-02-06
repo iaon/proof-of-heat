@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+from datetime import datetime, timezone
 from html import escape
 from pathlib import Path
 from typing import Any, Dict
@@ -208,7 +209,10 @@ def create_app(config: AppConfig = DEFAULT_CONFIG) -> FastAPI:
             </head>
             <body>
                 <h1>proof-of-heat MVP</h1>
-                <p><a href="/config">Edit configuration</a></p>
+                <p>
+                    <a href="/config">Edit configuration</a>
+                    · <a href="/metrics">Metrics chart</a>
+                </p>
                 <p class=\"muted\">Quick control panel for the miner-backed heating MVP. Data refreshes live on load and whenever you click refresh.</p>
 
                 <div class=\"card\">
@@ -335,6 +339,302 @@ def create_app(config: AppConfig = DEFAULT_CONFIG) -> FastAPI:
             </body>
             </html>
             """
+    metrics_markup = """
+            <!doctype html>
+            <html lang="ru">
+            <head>
+                <meta charset="utf-8" />
+                <meta name="viewport" content="width=device-width, initial-scale=1" />
+                <title>Metrics chart</title>
+                <style>
+                    body { font-family: system-ui, sans-serif; margin: 24px; color: #0f172a; background: #f8fafc; }
+                    h1 { margin-top: 0; }
+                    .card { background: #fff; padding: 16px; border-radius: 8px; box-shadow: 0 1px 4px rgba(0,0,0,0.1); margin-bottom: 16px; }
+                    .row { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; }
+                    label { font-weight: 600; }
+                    select, input { padding: 6px 8px; border-radius: 4px; border: 1px solid #cbd5e1; }
+                    button { cursor: pointer; padding: 8px 12px; border: none; background: #2563eb; color: white; border-radius: 4px; }
+                    .muted { color: #64748b; }
+                    canvas { max-width: 100%; }
+                </style>
+                <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+            </head>
+            <body>
+                <h1>Metrics chart</h1>
+                <p class="muted">Select a device + metric to plot history over time.</p>
+
+                <div class="card">
+                    <div class="row" style="margin-bottom:12px;">
+                        <label for="device-type">Device type</label>
+                        <select id="device-type"></select>
+
+                        <label for="device-id">Device id</label>
+                        <select id="device-id"></select>
+
+                        <label for="metric">Metric</label>
+                        <select id="metric"></select>
+                    </div>
+                    <div class="row">
+                        <label for="start-date">Start</label>
+                        <input id="start-date" type="date" />
+                        <input id="start-hour" type="number" min="0" max="23" placeholder="HH" />
+                        <input id="start-minute" type="number" min="0" max="59" placeholder="MM" />
+                        <input id="start-second" type="number" min="0" max="59" placeholder="SS" />
+                        <label for="end-date">End</label>
+                        <input id="end-date" type="date" />
+                        <input id="end-hour" type="number" min="0" max="23" placeholder="HH" />
+                        <input id="end-minute" type="number" min="0" max="59" placeholder="MM" />
+                        <input id="end-second" type="number" min="0" max="59" placeholder="SS" />
+                        <button id="apply">Load</button>
+                    </div>
+                </div>
+
+                <div class="card">
+                    <canvas id="chart" height="120"></canvas>
+                    <p id="empty" class="muted"></p>
+                </div>
+
+                <script>
+                    const deviceTypeEl = document.getElementById('device-type');
+                    const deviceIdEl = document.getElementById('device-id');
+                    const metricEl = document.getElementById('metric');
+                    const startDateEl = document.getElementById('start-date');
+                    const startHourEl = document.getElementById('start-hour');
+                    const startMinuteEl = document.getElementById('start-minute');
+                    const startSecondEl = document.getElementById('start-second');
+                    const endDateEl = document.getElementById('end-date');
+                    const endHourEl = document.getElementById('end-hour');
+                    const endMinuteEl = document.getElementById('end-minute');
+                    const endSecondEl = document.getElementById('end-second');
+                    const emptyEl = document.getElementById('empty');
+                    const ctx = document.getElementById('chart').getContext('2d');
+                    let chart;
+
+                    function setOptions(select, options) {
+                        select.innerHTML = '';
+                        const placeholder = document.createElement('option');
+                        placeholder.value = '';
+                        placeholder.textContent = '—';
+                        select.appendChild(placeholder);
+                        options.forEach((item) => {
+                            const opt = document.createElement('option');
+                            opt.value = item;
+                            opt.textContent = item;
+                            select.appendChild(opt);
+                        });
+                    }
+
+                    function toDateInputValue(date) {
+                        const pad = (num) => String(num).padStart(2, '0');
+                        return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+                    }
+
+                    function toTimeParts(date) {
+                        const pad = (num) => String(num).padStart(2, '0');
+                        return {
+                            hour: pad(date.getHours()),
+                            minute: pad(date.getMinutes()),
+                            second: pad(date.getSeconds()),
+                        };
+                    }
+
+                    function parseDateTimeInput(dateValue, hourValue, minuteValue, secondValue) {
+                        if (!dateValue) {
+                            return null;
+                        }
+                        const [year, month, day] = dateValue.split('-').map(Number);
+                        const hour = Number(hourValue);
+                        const minute = Number(minuteValue);
+                        const second = Number(secondValue);
+                        if ([year, month, day, hour, minute, second].some((item) => Number.isNaN(item))) {
+                            return null;
+                        }
+                        return new Date(year, month - 1, day, hour, minute, second, 0);
+                    }
+
+                    function toIsoWithOffset(dateValue, hourValue, minuteValue, secondValue) {
+                        const date = parseDateTimeInput(dateValue, hourValue, minuteValue, secondValue);
+                        if (!date) {
+                            return '';
+                        }
+                        const pad = (num) => String(num).padStart(2, '0');
+                        const tzOffset = -date.getTimezoneOffset();
+                        const sign = tzOffset >= 0 ? '+' : '-';
+                        const offsetHours = pad(Math.floor(Math.abs(tzOffset) / 60));
+                        const offsetMinutes = pad(Math.abs(tzOffset) % 60);
+                        return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}${sign}${offsetHours}:${offsetMinutes}`;
+                    }
+
+                    function formatDateTime(value) {
+                        return new Intl.DateTimeFormat('ru-RU', {
+                            year: 'numeric',
+                            month: '2-digit',
+                            day: '2-digit',
+                            hour: '2-digit',
+                            minute: '2-digit',
+                            second: '2-digit',
+                            hour12: false,
+                        }).format(new Date(value));
+                    }
+
+                    function parseLocalInputToMs(dateValue, hourValue, minuteValue, secondValue) {
+                        const date = parseDateTimeInput(dateValue, hourValue, minuteValue, secondValue);
+                        return date ? date.getTime() : null;
+                    }
+
+                    async function loadDeviceTypes() {
+                        const res = await fetch('/api/metrics/device-types');
+                        const data = await res.json();
+                        setOptions(deviceTypeEl, data.device_types || []);
+                    }
+
+                    async function loadDeviceIds() {
+                        const type = deviceTypeEl.value;
+                        if (!type) {
+                            setOptions(deviceIdEl, []);
+                            return;
+                        }
+                        const res = await fetch(`/api/metrics/device-ids?device_type=${encodeURIComponent(type)}`);
+                        const data = await res.json();
+                        setOptions(deviceIdEl, data.device_ids || []);
+                    }
+
+                    async function loadMetrics() {
+                        const type = deviceTypeEl.value;
+                        const id = deviceIdEl.value;
+                        if (!type || !id) {
+                            setOptions(metricEl, []);
+                            return;
+                        }
+                        const res = await fetch(`/api/metrics/metric-names?device_type=${encodeURIComponent(type)}&device_id=${encodeURIComponent(id)}`);
+                        const data = await res.json();
+                        setOptions(metricEl, data.metrics || []);
+                    }
+
+                    async function loadChart() {
+                        const type = deviceTypeEl.value;
+                        const id = deviceIdEl.value;
+                        const metric = metricEl.value;
+                        if (!type || !id || !metric) {
+                            return;
+                        }
+                        const startDate = startDateEl.value;
+                        const startHour = startHourEl.value;
+                        const startMinute = startMinuteEl.value;
+                        const startSecond = startSecondEl.value;
+                        const endDate = endDateEl.value;
+                        const endHour = endHourEl.value;
+                        const endMinute = endMinuteEl.value;
+                        const endSecond = endSecondEl.value;
+                        const startMs = parseLocalInputToMs(startDate, startHour, startMinute, startSecond);
+                        const endMs = parseLocalInputToMs(endDate, endHour, endMinute, endSecond);
+                        const params = new URLSearchParams({
+                            device_type: type,
+                            device_id: id,
+                            metric: metric,
+                        });
+                        if (startDate) {
+                            params.set('start', toIsoWithOffset(startDate, startHour, startMinute, startSecond));
+                        }
+                        if (endDate) {
+                            params.set('end', toIsoWithOffset(endDate, endHour, endMinute, endSecond));
+                        }
+                        const res = await fetch(`/api/metrics/data?${params.toString()}`);
+                        const data = await res.json();
+                        const points = data.points || [];
+                        const gapMs = 10 * 60 * 1000;
+                        const series = [];
+                        points.forEach((point, index) => {
+                            const ts = point.ts;
+                            if (index > 0) {
+                                const prevTs = points[index - 1].ts;
+                                if (ts - prevTs > gapMs) {
+                                    series.push({ x: prevTs + gapMs, y: null });
+                                }
+                            }
+                            series.push({ x: ts, y: point.value });
+                        });
+
+                        if (chart) {
+                            chart.destroy();
+                        }
+                        if (!points.length) {
+                            emptyEl.textContent = 'No data for the selected range.';
+                        } else {
+                            emptyEl.textContent = '';
+                        }
+                        chart = new Chart(ctx, {
+                            type: 'line',
+                            data: {
+                                datasets: [{
+                                    label: `${type} ${id} · ${metric}`,
+                                    data: series,
+                                    borderColor: '#2563eb',
+                                    backgroundColor: 'rgba(37, 99, 235, 0.15)',
+                                    tension: 0.25,
+                                    fill: true,
+                                    spanGaps: false,
+                                }],
+                            },
+                            options: {
+                                responsive: true,
+                                scales: {
+                                    x: {
+                                        type: 'linear',
+                                        min: startMs ?? undefined,
+                                        max: endMs ?? undefined,
+                                        ticks: {
+                                            callback: (value) => formatDateTime(value),
+                                        },
+                                    },
+                                    y: { beginAtZero: false },
+                                },
+                                plugins: {
+                                    tooltip: {
+                                        callbacks: {
+                                            title: (items) => {
+                                                if (!items.length) {
+                                                    return '';
+                                                }
+                                                return formatDateTime(items[0].parsed.x);
+                                            },
+                                        },
+                                    },
+                                },
+                            },
+                        });
+                    }
+
+                    deviceTypeEl.addEventListener('change', async () => {
+                        await loadDeviceIds();
+                        await loadMetrics();
+                        loadChart();
+                    });
+                    deviceIdEl.addEventListener('change', async () => {
+                        await loadMetrics();
+                        loadChart();
+                    });
+                    metricEl.addEventListener('change', loadChart);
+                    document.getElementById('apply').addEventListener('click', loadChart);
+
+                    const now = new Date();
+                    const yesterday = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+                    startDateEl.value = toDateInputValue(yesterday);
+                    endDateEl.value = toDateInputValue(now);
+                    const startParts = toTimeParts(yesterday);
+                    const endParts = toTimeParts(now);
+                    startHourEl.value = startParts.hour;
+                    startMinuteEl.value = startParts.minute;
+                    startSecondEl.value = startParts.second;
+                    endHourEl.value = endParts.hour;
+                    endMinuteEl.value = endParts.minute;
+                    endSecondEl.value = endParts.second;
+
+                    loadDeviceTypes();
+                </script>
+            </body>
+            </html>
+            """
 
     @app.get("/", response_class=HTMLResponse, include_in_schema=False)
     @app.get("/ui", response_class=HTMLResponse, include_in_schema=False)
@@ -345,6 +645,11 @@ def create_app(config: AppConfig = DEFAULT_CONFIG) -> FastAPI:
     @app.get("/config/", response_class=HTMLResponse, include_in_schema=False)
     def config_editor() -> HTMLResponse:
         return HTMLResponse(CONFIG_MARKUP)
+
+    @app.get("/metrics", response_class=HTMLResponse, include_in_schema=False)
+    @app.get("/metrics/", response_class=HTMLResponse, include_in_schema=False)
+    def metrics_view() -> HTMLResponse:
+        return HTMLResponse(metrics_markup)
 
     @app.get("/api/config")
     @app.get("/api/config/")
@@ -362,6 +667,55 @@ def create_app(config: AppConfig = DEFAULT_CONFIG) -> FastAPI:
         parsed = save_settings_yaml(raw_yaml)
         device_poller.update_settings(parsed)
         return {"parsed": parsed}
+
+    @app.get("/api/metrics/device-types")
+    def list_metric_device_types() -> Dict[str, list[str]]:
+        return {"device_types": device_poller.list_metric_device_types()}
+
+    @app.get("/api/metrics/device-ids")
+    def list_metric_device_ids(device_type: str) -> Dict[str, list[str]]:
+        if not device_type:
+            raise HTTPException(status_code=400, detail="device_type is required")
+        return {"device_ids": device_poller.list_metric_device_ids(device_type)}
+
+    @app.get("/api/metrics/metric-names")
+    def list_metric_names(device_type: str, device_id: str) -> Dict[str, list[str]]:
+        if not device_type or not device_id:
+            raise HTTPException(status_code=400, detail="device_type and device_id required")
+        return {"metrics": device_poller.list_metric_names(device_type, device_id)}
+
+    @app.get("/api/metrics/data")
+    def get_metric_data(
+        device_type: str,
+        device_id: str,
+        metric: str,
+        start: str | None = None,
+        end: str | None = None,
+    ) -> Dict[str, Any]:
+        if not device_type or not device_id or not metric:
+            raise HTTPException(status_code=400, detail="device_type, device_id, metric required")
+        start_ms = _parse_iso_datetime(start)
+        end_ms = _parse_iso_datetime(end)
+        points = device_poller.get_metric_series(
+            device_type=device_type,
+            device_id=device_id,
+            metric=metric,
+            start_ms=start_ms,
+            end_ms=end_ms,
+        )
+        return {"points": points}
+
+    def _parse_iso_datetime(value: str | None) -> int | None:
+        if not value:
+            return None
+        try:
+            cleaned = value.replace("Z", "+00:00")
+            dt = datetime.fromisoformat(cleaned)
+        except ValueError:
+            return None
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return int(dt.timestamp() * 1000)
 
     def _load_location(settings_data: Dict[str, Any]) -> Dict[str, Any] | None:
         if not isinstance(settings_data, dict):
