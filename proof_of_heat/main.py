@@ -166,6 +166,19 @@ def create_app(config: AppConfig = DEFAULT_CONFIG) -> FastAPI:
     device_poller = DevicePoller(settings_data, data_dir=config.data_dir)
     app.state.device_poller = device_poller
 
+    def _load_heating_curve(settings: Dict[str, Any]) -> str | None:
+        if not isinstance(settings, dict):
+            return None
+        curve = settings.get("heating_curve")
+        if isinstance(curve, str):
+            normalized = curve.strip()
+            return normalized or None
+        return None
+
+    heating_curve = _load_heating_curve(settings_data)
+    if heating_curve:
+        config.heating_curve = heating_curve
+
     @app.get("/health")
     def health() -> Dict[str, str]:
         return {"status": "ok"}
@@ -665,6 +678,9 @@ def create_app(config: AppConfig = DEFAULT_CONFIG) -> FastAPI:
         if not isinstance(raw_yaml, str):
             raise HTTPException(status_code=400, detail="raw_yaml must be a string")
         parsed = save_settings_yaml(raw_yaml)
+        heating_curve = _load_heating_curve(parsed)
+        if heating_curve:
+            config.heating_curve = heating_curve
         device_poller.update_settings(parsed)
         return {"parsed": parsed}
 
@@ -829,6 +845,7 @@ def create_app(config: AppConfig = DEFAULT_CONFIG) -> FastAPI:
             "mode": config.mode,
             "mode_label": human_readable_mode(config.mode),
             "target_temperature_c": config.target_temperature_c,
+            "heating_curve": config.heating_curve,
             "weather": weather_payload,
             "latest_snapshot": {
                 "timestamp": snapshot.timestamp,
