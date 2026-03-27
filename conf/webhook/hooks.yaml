@@ -1,6 +1,6 @@
 - id: deploy
   execute-command: /bin/sh
-  command-working-directory: /workspace/proof-of-heat
+  command-working-directory: /home/iaon/git/proof-of-heat
   pass-arguments-to-command:
     - source: string
       name: -c

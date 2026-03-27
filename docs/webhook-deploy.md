@@ -18,9 +18,15 @@ docker compose up --build -d app
 - слушает локальный порт `9000` (`127.0.0.1:9000`);
 - читает хуки из `conf/webhook/hooks.yaml`;
 - имеет доступ к репозиторию и Docker socket для выполнения команд;
-- читает SSH-ключ из `conf/webhook/ssh/id_rsa` для `git pull` по `git@github.com:...`.
+- читает SSH-ключ из `conf/webhook/ssh/id_rsa` для `git pull` по `git@github.com:...`;
+- монтирует репозиторий по тому же абсолютному пути, что и на хосте, чтобы `docker compose up ... app` из webhook-контейнера использовал корректные bind mounts.
 
 Сервис запускается с `uid=1000`. Для доступа к `docker.sock` используется `group_add` через переменную `DOCKER_SOCKET_GID` (по умолчанию `992`, как в worker node). Если на целевом хосте GID группы Docker другой, переопределите эту переменную перед запуском `docker compose`.
+
+Если путь к репозиторию на хосте отличается от `/home/iaon/git/proof-of-heat`, задайте `PROJECT_ROOT` перед запуском webhook:
+```bash
+PROJECT_ROOT=/absolute/path/to/proof-of-heat docker compose -f docker-compose.yml -f docker-compose.webhook.yml up --build -d webhook
+```
 
 Основной сервис запускается как обычно:
 ```bash

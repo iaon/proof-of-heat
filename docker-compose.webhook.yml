@@ -11,11 +11,11 @@ services:
       - WEBHOOK_SSH_PRIVATE_KEY_FILE=/run/webhook-ssh/id_rsa
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
-      - .:/workspace/proof-of-heat
+      - ${PROJECT_ROOT:-/home/iaon/git/proof-of-heat}:${PROJECT_ROOT:-/home/iaon/git/proof-of-heat}
       - ./conf/webhook:/hooks:ro
       - ./conf/webhook/ssh:/run/webhook-ssh:ro
     command:
       - "-hooks=/hooks/hooks.yaml"
       - "-verbose"
       - "-port=9000"
-    working_dir: /workspace/proof-of-heat
+    working_dir: ${PROJECT_ROOT:-/home/iaon/git/proof-of-heat}
