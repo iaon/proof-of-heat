@@ -1,0 +1,8 @@
+- id: deploy
+  execute-command: /bin/sh
+  command-working-directory: /workspace/proof-of-heat
+  pass-arguments-to-command:
+    - source: string
+      name: -c
+    - source: string
+      name: git pull && docker compose up --build -d

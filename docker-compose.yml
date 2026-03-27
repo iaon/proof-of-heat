@@ -11,3 +11,18 @@ services:
       - PYTHONUNBUFFERED=1
       - LOG_LEVEL=INFO
     command: ["python", "-m", "proof_of_heat.main"]
+  webhook:
+    build:
+      context: .
+      dockerfile: Dockerfile.webhook
+    ports:
+      - "127.0.0.1:9000:9000"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - .:/workspace/proof-of-heat
+      - ./conf/webhook:/hooks:ro
+    command:
+      - "-hooks=/hooks/hooks.yaml"
+      - "-verbose"
+      - "-port=9000"
+    working_dir: /workspace/proof-of-heat
