@@ -16,7 +16,7 @@ services:
       context: .
       dockerfile: Dockerfile.webhook
     group_add:
-      - "${DOCKER_SOCKET_GID:-986}"
+      - "${DOCKER_SOCKET_GID:-992}"
     ports:
       - "127.0.0.1:9000:9000"
     environment:
