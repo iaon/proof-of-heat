@@ -10,4 +10,6 @@ services:
     environment:
       - PYTHONUNBUFFERED=1
       - LOG_LEVEL=INFO
+      # Example for reverse proxy prefix deployment:
+      - ROOT_PATH=/poh
     command: ["python", "-m", "proof_of_heat.main"]

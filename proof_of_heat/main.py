@@ -73,6 +73,8 @@ CONFIG_MARKUP = """
             </div>
 
             <script>
+                const rootPath = __ROOT_PATH_JSON__;
+                const apiUrl = (path) => `${rootPath}${path}`;
                 const settingsEl = document.getElementById('settings');
                 const previewEl = document.getElementById('preview');
 
@@ -82,7 +84,7 @@ CONFIG_MARKUP = """
 
                 async function loadSettings() {
                     previewEl.textContent = 'Loading...';
-                    const res = await fetch('/api/config');
+                    const res = await fetch(apiUrl('/api/config'));
                     const data = await res.json();
                     if (!res.ok) {
                         previewEl.textContent = 'Error: ' + (data.detail || 'Failed to load');
@@ -93,7 +95,7 @@ CONFIG_MARKUP = """
                 }
 
                 async function saveSettings() {
-                    const res = await fetch('/api/config', {
+                    const res = await fetch(apiUrl('/api/config'), {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({ raw_yaml: settingsEl.value }),
@@ -116,7 +118,7 @@ CONFIG_MARKUP = """
         """
 
 try:  # Lazy import to allow a diagnostic ASGI fallback if dependencies are missing
-    from fastapi import FastAPI, HTTPException
+    from fastapi import FastAPI, HTTPException, Request
     from fastapi.responses import HTMLResponse, JSONResponse
     from proof_of_heat.config import DEFAULT_CONFIG, AppConfig
     from proof_of_heat.plugins.base import human_readable_mode
@@ -135,6 +137,7 @@ try:  # Lazy import to allow a diagnostic ASGI fallback if dependencies are miss
 except Exception as exc:  # pragma: no cover - defensive import guard
     FastAPI = None  # type: ignore[assignment]
     HTTPException = Exception  # type: ignore[assignment]
+    Request = Any  # type: ignore[assignment]
     HTMLResponse = JSONResponse = None  # type: ignore[assignment]
     DEFAULT_CONFIG = AppConfig = human_readable_mode = Whatsminer = TemperatureController = None  # type: ignore[assignment]
     load_settings_yaml = parse_settings_yaml = save_settings_yaml = None  # type: ignore[assignment]
@@ -145,6 +148,7 @@ except Exception as exc:  # pragma: no cover - defensive import guard
 def create_app(config: AppConfig = DEFAULT_CONFIG) -> FastAPI:
     logger.info("Starting proof-of-heat FastAPI app")
     config.ensure_data_dir()
+    root_path = os.getenv("ROOT_PATH", "").rstrip("/")
 
     logger.debug("Data directory ready at %s", config.data_dir)
 
@@ -160,7 +164,7 @@ def create_app(config: AppConfig = DEFAULT_CONFIG) -> FastAPI:
         config=config, miner=miner, history_file=history_file
     )
 
-    app = FastAPI(title="proof-of-heat MVP", version="0.1.0")
+    app = FastAPI(title="proof-of-heat MVP", version="0.1.0", root_path=root_path)
 
     settings_data = parse_settings_yaml(load_settings_yaml())
     device_poller = DevicePoller(settings_data, data_dir=config.data_dir)
@@ -187,6 +191,13 @@ def create_app(config: AppConfig = DEFAULT_CONFIG) -> FastAPI:
     def debug_routes() -> Dict[str, Any]:
         return {"routes": sorted({route.path for route in app.router.routes})}
 
+    def render_markup(markup: str, request: Request) -> str:
+        root_path = request.scope.get("root_path", "").rstrip("/")
+        return (
+            markup.replace("__ROOT_PATH_JSON__", json.dumps(root_path))
+            .replace("__ROOT_PATH__", escape(root_path, quote=True))
+        )
+
     ui_markup = """
             <!doctype html>
             <html lang=\"en\">
@@ -210,8 +221,8 @@ def create_app(config: AppConfig = DEFAULT_CONFIG) -> FastAPI:
             <body>
                 <h1>proof-of-heat MVP</h1>
                 <p>
-                    <a href="/config">Edit configuration</a>
-                    · <a href="/metrics">Metrics chart</a>
+                    <a href="__ROOT_PATH__/config">Edit configuration</a>
+                    · <a href="__ROOT_PATH__/metrics">Metrics chart</a>
                 </p>
                 <p class=\"muted\">Quick control panel for the miner-backed heating MVP. Data refreshes live on load and whenever you click refresh.</p>
 
@@ -262,6 +273,8 @@ def create_app(config: AppConfig = DEFAULT_CONFIG) -> FastAPI:
                 </div>
 
                 <script>
+                    const rootPath = __ROOT_PATH_JSON__;
+                    const apiUrl = (path) => `${rootPath}${path}`;
                     const statusEl = document.getElementById('status');
                     const weatherEl = document.getElementById('weather');
                     const weatherLocationEl = document.getElementById('weather-location');
@@ -274,7 +287,7 @@ def create_app(config: AppConfig = DEFAULT_CONFIG) -> FastAPI:
                         weatherEl.textContent = 'Loading...';
                         weatherLocationEl.textContent = '';
                         try {
-                            const res = await fetch('/status');
+                            const res = await fetch(apiUrl('/status'));
                             const data = await res.json();
                             statusEl.textContent = JSON.stringify(data, null, 2);
                             if (data.target_temperature_c !== undefined) {
@@ -299,31 +312,31 @@ def create_app(config: AppConfig = DEFAULT_CONFIG) -> FastAPI:
 
                     async function setTarget() {
                         const temp = targetEl.value;
-                        const res = await fetch(`/target-temperature?temp_c=${encodeURIComponent(temp)}`, { method: 'POST' });
+                        const res = await fetch(apiUrl(`/target-temperature?temp_c=${encodeURIComponent(temp)}`), { method: 'POST' });
                         const data = await res.json();
                         statusEl.textContent = JSON.stringify(data, null, 2);
                     }
 
                     async function setMode() {
                         const mode = modeEl.value;
-                        const res = await fetch(`/mode/${mode}`, { method: 'POST' });
+                        const res = await fetch(apiUrl(`/mode/${mode}`), { method: 'POST' });
                         const data = await res.json();
                         statusEl.textContent = JSON.stringify(data, null, 2);
                     }
 
                     async function startMiner() {
-                        const res = await fetch('/miner/start', { method: 'POST' });
+                        const res = await fetch(apiUrl('/miner/start'), { method: 'POST' });
                         statusEl.textContent = JSON.stringify(await res.json(), null, 2);
                     }
 
                     async function stopMiner() {
-                        const res = await fetch('/miner/stop', { method: 'POST' });
+                        const res = await fetch(apiUrl('/miner/stop'), { method: 'POST' });
                         statusEl.textContent = JSON.stringify(await res.json(), null, 2);
                     }
 
                     async function setPower() {
                         const watts = powerEl.value;
-                        const res = await fetch(`/miner/power-limit?watts=${encodeURIComponent(watts)}`, { method: 'POST' });
+                        const res = await fetch(apiUrl(`/miner/power-limit?watts=${encodeURIComponent(watts)}`), { method: 'POST' });
                         statusEl.textContent = JSON.stringify(await res.json(), null, 2);
                     }
 
@@ -395,6 +408,8 @@ def create_app(config: AppConfig = DEFAULT_CONFIG) -> FastAPI:
                 </div>
 
                 <script>
+                    const rootPath = __ROOT_PATH_JSON__;
+                    const apiUrl = (path) => `${rootPath}${path}`;
                     const deviceTypeEl = document.getElementById('device-type');
                     const deviceIdEl = document.getElementById('device-id');
                     const metricEl = document.getElementById('metric');
@@ -483,7 +498,7 @@ def create_app(config: AppConfig = DEFAULT_CONFIG) -> FastAPI:
                     }
 
                     async function loadDeviceTypes() {
-                        const res = await fetch('/api/metrics/device-types');
+                        const res = await fetch(apiUrl('/api/metrics/device-types'));
                         const data = await res.json();
                         setOptions(deviceTypeEl, data.device_types || []);
                     }
@@ -494,7 +509,7 @@ def create_app(config: AppConfig = DEFAULT_CONFIG) -> FastAPI:
                             setOptions(deviceIdEl, []);
                             return;
                         }
-                        const res = await fetch(`/api/metrics/device-ids?device_type=${encodeURIComponent(type)}`);
+                        const res = await fetch(apiUrl(`/api/metrics/device-ids?device_type=${encodeURIComponent(type)}`));
                         const data = await res.json();
                         setOptions(deviceIdEl, data.device_ids || []);
                     }
@@ -506,7 +521,7 @@ def create_app(config: AppConfig = DEFAULT_CONFIG) -> FastAPI:
                             setOptions(metricEl, []);
                             return;
                         }
-                        const res = await fetch(`/api/metrics/metric-names?device_type=${encodeURIComponent(type)}&device_id=${encodeURIComponent(id)}`);
+                        const res = await fetch(apiUrl(`/api/metrics/metric-names?device_type=${encodeURIComponent(type)}&device_id=${encodeURIComponent(id)}`));
                         const data = await res.json();
                         setOptions(metricEl, data.metrics || []);
                     }
@@ -539,7 +554,7 @@ def create_app(config: AppConfig = DEFAULT_CONFIG) -> FastAPI:
                         if (endDate) {
                             params.set('end', toIsoWithOffset(endDate, endHour, endMinute, endSecond));
                         }
-                        const res = await fetch(`/api/metrics/data?${params.toString()}`);
+                        const res = await fetch(apiUrl(`/api/metrics/data?${params.toString()}`));
                         const data = await res.json();
                         const points = data.points || [];
                         const gapMs = 10 * 60 * 1000;
@@ -638,18 +653,18 @@ def create_app(config: AppConfig = DEFAULT_CONFIG) -> FastAPI:
 
     @app.get("/", response_class=HTMLResponse, include_in_schema=False)
     @app.get("/ui", response_class=HTMLResponse, include_in_schema=False)
-    def ui() -> HTMLResponse:
-        return HTMLResponse(ui_markup)
+    def ui(request: Request) -> HTMLResponse:
+        return HTMLResponse(render_markup(ui_markup, request))
 
     @app.get("/config", response_class=HTMLResponse, include_in_schema=False)
     @app.get("/config/", response_class=HTMLResponse, include_in_schema=False)
-    def config_editor() -> HTMLResponse:
-        return HTMLResponse(CONFIG_MARKUP)
+    def config_editor(request: Request) -> HTMLResponse:
+        return HTMLResponse(render_markup(CONFIG_MARKUP, request))
 
     @app.get("/metrics", response_class=HTMLResponse, include_in_schema=False)
     @app.get("/metrics/", response_class=HTMLResponse, include_in_schema=False)
-    def metrics_view() -> HTMLResponse:
-        return HTMLResponse(metrics_markup)
+    def metrics_view(request: Request) -> HTMLResponse:
+        return HTMLResponse(render_markup(metrics_markup, request))
 
     @app.get("/api/config")
     @app.get("/api/config/")
