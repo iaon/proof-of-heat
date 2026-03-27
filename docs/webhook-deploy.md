@@ -15,6 +15,8 @@ docker compose up --build -d
 - имеет доступ к репозиторию и Docker socket для выполнения команд;
 - читает SSH-ключ из `conf/webhook/ssh/id_rsa` для `git pull` по `git@github.com:...`.
 
+Сервис запускается с `uid=1000`. Для доступа к `docker.sock` используется `group_add` через переменную `DOCKER_SOCKET_GID` (по умолчанию `986` в текущем окружении). Если на целевом хосте GID группы Docker другой, переопределите эту переменную перед запуском `docker compose`.
+
 Конфиг хука расположен в `conf/webhook/hooks.yaml` и вызывает:
 ```
 git pull && docker compose up --build -d
