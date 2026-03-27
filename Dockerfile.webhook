@@ -2,10 +2,19 @@ FROM almir/webhook:2.8.3
 
 USER root
 
+ENV HOME=/home/app
+
 RUN apk add --no-cache docker-cli docker-cli-compose git openssh-client
+
+RUN addgroup -g 1000 app \
+    && adduser -D -u 1000 -G app -h /home/app app \
+    && mkdir -p /home/app \
+    && chown -R app:app /home/app
 
 COPY docker/webhook-entrypoint.sh /usr/local/bin/webhook-entrypoint.sh
 
 RUN chmod +x /usr/local/bin/webhook-entrypoint.sh
+
+USER 1000:1000
 
 ENTRYPOINT ["/usr/local/bin/webhook-entrypoint.sh"]

@@ -1,7 +1,8 @@
 #!/bin/sh
 set -eu
 
-ssh_dir=/root/.ssh
+home_dir="${HOME:-/tmp}"
+ssh_dir="$home_dir/.ssh"
 default_key_path=/run/webhook-ssh/id_ed25519
 key_target="$ssh_dir/id_ed25519"
 key_source="${WEBHOOK_SSH_PRIVATE_KEY_FILE:-$default_key_path}"
