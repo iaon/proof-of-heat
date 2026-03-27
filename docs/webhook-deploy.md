@@ -12,7 +12,8 @@ docker compose up --build -d
 В текущем `docker-compose.yml` уже добавлен сервис `webhook`, который:
 - слушает локальный порт `9000` (`127.0.0.1:9000`);
 - читает хуки из `conf/webhook/hooks.yaml`;
-- имеет доступ к репозиторию и Docker socket для выполнения команд.
+- имеет доступ к репозиторию и Docker socket для выполнения команд;
+- читает SSH-ключ из `conf/webhook/ssh/id_ed25519` для `git pull` по `git@github.com:...`.
 
 Конфиг хука расположен в `conf/webhook/hooks.yaml` и вызывает:
 ```
@@ -20,6 +21,28 @@ git pull && docker compose up --build -d
 ```
 
 Если нужно изменить команды или рабочую директорию — правьте этот файл.
+
+## 1.1. SSH-ключ для `git pull`
+
+Так как `origin` настроен как SSH remote (`git@github.com:...`), контейнеру `webhook` нужен приватный ключ.
+
+1. Создайте локальную директорию для ключа:
+
+```bash
+mkdir -p conf/webhook/ssh
+chmod 700 conf/webhook/ssh
+```
+
+2. Положите туда deploy key или другой SSH private key с доступом к репозиторию:
+
+```bash
+cp /path/to/id_ed25519 conf/webhook/ssh/id_ed25519
+chmod 600 conf/webhook/ssh/id_ed25519
+```
+
+В `conf/webhook/ssh/.gitignore` уже настроено игнорирование содержимого директории, поэтому ключ не попадет в репозиторий.
+
+Альтернатива: вместо файла можно передать ключ через переменную окружения `WEBHOOK_SSH_PRIVATE_KEY`, но файл-монтирование безопаснее и проще для эксплуатации.
 
 ## 2. Конфигурация nginx
 

@@ -1,1 +1,4 @@
 conf/settings.yaml
+conf/settings*.yaml
+.venv
+__pycache__/

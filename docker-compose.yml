@@ -17,10 +17,13 @@ services:
       dockerfile: Dockerfile.webhook
     ports:
       - "127.0.0.1:9000:9000"
+    environment:
+      - WEBHOOK_SSH_PRIVATE_KEY_FILE=/run/webhook-ssh/id_rsa
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - .:/workspace/proof-of-heat
       - ./conf/webhook:/hooks:ro
+      - ./conf/webhook/ssh:/run/webhook-ssh:ro
     command:
       - "-hooks=/hooks/hooks.yaml"
       - "-verbose"
