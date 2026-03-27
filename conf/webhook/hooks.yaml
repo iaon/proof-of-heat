@@ -5,4 +5,4 @@
     - source: string
       name: -c
     - source: string
-      name: git pull && docker compose up --build -d
+      name: git pull && docker compose up --build -d app

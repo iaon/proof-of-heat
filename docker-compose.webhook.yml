@@ -1,0 +1,21 @@
+services:
+  webhook:
+    build:
+      context: .
+      dockerfile: Dockerfile.webhook
+    group_add:
+      - "${DOCKER_SOCKET_GID:-992}"
+    ports:
+      - "127.0.0.1:9000:9000"
+    environment:
+      - WEBHOOK_SSH_PRIVATE_KEY_FILE=/run/webhook-ssh/id_rsa
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - .:/workspace/proof-of-heat
+      - ./conf/webhook:/hooks:ro
+      - ./conf/webhook/ssh:/run/webhook-ssh:ro
+    command:
+      - "-hooks=/hooks/hooks.yaml"
+      - "-verbose"
+      - "-port=9000"
+    working_dir: /workspace/proof-of-heat

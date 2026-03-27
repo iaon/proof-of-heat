@@ -4,22 +4,37 @@
 
 ```
 git pull
-docker compose up --build -d
+docker compose up --build -d app
 ```
+
+Основной сервис и webhook-контейнер разделены:
+- `docker-compose.yml` содержит только `app`;
+- `docker-compose.webhook.yml` содержит только `webhook`;
+- `webhook` запускается вручную отдельной командой.
 
 ## 1. Webhook контейнер через Docker Compose
 
-В текущем `docker-compose.yml` уже добавлен сервис `webhook`, который:
+Файл `docker-compose.webhook.yml` содержит сервис `webhook`, который:
 - слушает локальный порт `9000` (`127.0.0.1:9000`);
 - читает хуки из `conf/webhook/hooks.yaml`;
 - имеет доступ к репозиторию и Docker socket для выполнения команд;
 - читает SSH-ключ из `conf/webhook/ssh/id_rsa` для `git pull` по `git@github.com:...`.
 
-Сервис запускается с `uid=1000`. Для доступа к `docker.sock` используется `group_add` через переменную `DOCKER_SOCKET_GID` (по умолчанию `986` в текущем окружении). Если на целевом хосте GID группы Docker другой, переопределите эту переменную перед запуском `docker compose`.
+Сервис запускается с `uid=1000`. Для доступа к `docker.sock` используется `group_add` через переменную `DOCKER_SOCKET_GID` (по умолчанию `992`, как в worker node). Если на целевом хосте GID группы Docker другой, переопределите эту переменную перед запуском `docker compose`.
+
+Основной сервис запускается как обычно:
+```bash
+docker compose up --build -d app
+```
+
+Webhook запускается вручную отдельной командой:
+```bash
+docker compose -f docker-compose.yml -f docker-compose.webhook.yml up --build -d webhook
+```
 
 Конфиг хука расположен в `conf/webhook/hooks.yaml` и вызывает:
 ```
-git pull && docker compose up --build -d
+git pull && docker compose up --build -d app
 ```
 
 Если нужно изменить команды или рабочую директорию — правьте этот файл.
