@@ -13,7 +13,7 @@ docker compose up --build -d
 - слушает локальный порт `9000` (`127.0.0.1:9000`);
 - читает хуки из `conf/webhook/hooks.yaml`;
 - имеет доступ к репозиторию и Docker socket для выполнения команд;
-- читает SSH-ключ из `conf/webhook/ssh/id_ed25519` для `git pull` по `git@github.com:...`.
+- читает SSH-ключ из `conf/webhook/ssh/id_rsa` для `git pull` по `git@github.com:...`.
 
 Конфиг хука расположен в `conf/webhook/hooks.yaml` и вызывает:
 ```
@@ -36,8 +36,8 @@ chmod 700 conf/webhook/ssh
 2. Положите туда deploy key или другой SSH private key с доступом к репозиторию:
 
 ```bash
-cp /path/to/id_ed25519 conf/webhook/ssh/id_ed25519
-chmod 600 conf/webhook/ssh/id_ed25519
+cp /path/to/id_rsa conf/webhook/ssh/id_rsa
+chmod 600 conf/webhook/ssh/id_rsa
 ```
 
 В `conf/webhook/ssh/.gitignore` уже настроено игнорирование содержимого директории, поэтому ключ не попадет в репозиторий.
