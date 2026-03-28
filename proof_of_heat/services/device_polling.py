@@ -584,16 +584,18 @@ class DevicePoller:
         location: dict[str, Any],
     ) -> dict[str, Any]:
         device_id = str(device.get("device_id", device_type))
+        provider_ts_ms = self._to_epoch_ms(payload.get("timestamp"))
+        polled_ts_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
         enriched_payload = {
             **payload,
             "device_id": device_id,
             "type": str(device.get("type", "virtual")),
             "location": location,
+            "provider_ts_ms": provider_ts_ms,
         }
-        ts_ms = self._to_epoch_ms(payload.get("timestamp"))
         if self._db_path:
             self._write_raw_event(
-                ts_ms=ts_ms,
+                ts_ms=polled_ts_ms,
                 device_type=device_type,
                 device_id=device_id,
                 payload=enriched_payload,
@@ -604,7 +606,7 @@ class DevicePoller:
             )
             if metrics:
                 self._write_metrics(
-                    ts_ms=ts_ms,
+                    ts_ms=polled_ts_ms,
                     device_type=device_type,
                     device_id=device_id,
                     metrics=metrics,

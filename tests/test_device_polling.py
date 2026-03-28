@@ -1,5 +1,6 @@
 import json
 import sqlite3
+import time
 
 from proof_of_heat.services import device_polling
 from proof_of_heat.services.device_polling import DevicePoller
@@ -205,3 +206,66 @@ def test_open_meteo_new_current_format_is_persisted(monkeypatch, tmp_path):
     points = poller.get_metric_series("open_meteo", "1001", "temperature_2m", None, None)
     assert len(points) == 1
     assert points[0]["value"] == 6.4
+
+
+def test_met_no_metrics_use_poll_time_instead_of_provider_hour_bucket(monkeypatch, tmp_path):
+    settings = {
+        "location": {
+            "name": "Moscow",
+            "latitude": 55.7558,
+            "longitude": 37.6173,
+            "timezone": "Europe/Moscow",
+        },
+        "devices": {
+            "met_no": [
+                {
+                    "device_id": 1002,
+                    "type": "virtual",
+                }
+            ]
+        },
+    }
+
+    monkeypatch.setattr(
+        device_polling,
+        "fetch_met_no_weather",
+        lambda **kwargs: {
+            "provider": "met_no",
+            # met.no can return coarse provider timestamps (for example on-the-hour)
+            "timestamp": "2026-03-29T10:00:00+00:00",
+            "current": {"air_temperature": 2.3},
+            "units": {"air_temperature": "celsius"},
+            "source": kwargs,
+        },
+    )
+
+    poller = DevicePoller(settings, data_dir=tmp_path)
+    device_cfg = settings["devices"]["met_no"][0]
+    poller.poll_met_no_device(device_cfg)
+    time.sleep(0.02)
+    poller.poll_met_no_device(device_cfg)
+
+    db_path = tmp_path / "telemetry.sqlite3"
+    with sqlite3.connect(db_path) as conn:
+        distinct_ts = conn.execute(
+            """
+            SELECT COUNT(DISTINCT ts)
+            FROM metrics
+            WHERE device_type = 'met_no'
+              AND device_id = '1002'
+              AND metric = 'air_temperature'
+            """
+        ).fetchone()
+        provider_ts = conn.execute(
+            """
+            SELECT json_extract(payload, '$.provider_ts_ms')
+            FROM raw_events
+            WHERE device_type = 'met_no' AND device_id = '1002'
+            ORDER BY id DESC
+            LIMIT 1
+            """
+        ).fetchone()
+
+    assert distinct_ts == (2,)
+    assert provider_ts is not None
+    assert int(provider_ts[0]) == poller._to_epoch_ms("2026-03-29T10:00:00+00:00")
