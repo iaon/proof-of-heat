@@ -310,10 +310,24 @@ def test_zont_device_selected_by_serial_and_metrics_persisted(monkeypatch, tmp_p
                     {
                         "serial": "SN-NEEDED",
                         "temp_out": 3.2,
-                        "io": [
-                            {"portname": "t_room", "value": 21.5},
-                            {"portname": "relay", "value": 1},
-                        ],
+                        "io": {
+                            "thermometers-state": {
+                                "600ff17fdcc0c856f06a7c3d": {
+                                    "last_state": "ok",
+                                    "last_value": 22.9,
+                                    "last_value_time": 1774739307,
+                                },
+                                "64adb1ba3939e3473a8ab9a3": {
+                                    "last_state": "ok",
+                                    "last_value": -1.2,
+                                    "last_value_time": 1774739307,
+                                },
+                            },
+                            "last-boiler-state": {
+                                "target_temp": 5,
+                                "power": True,
+                            },
+                        },
                     },
                 ],
             }
@@ -345,11 +359,23 @@ def test_zont_device_selected_by_serial_and_metrics_persisted(monkeypatch, tmp_p
     assert payload["device_id"] == "12000"
 
     metric_names = set(poller.list_metric_names("zont", "12000"))
-    assert {"temp_out", "io_t_room", "io_relay"} <= metric_names
+    assert {
+        "temp_out",
+        "io_thermometers_state_600ff17fdcc0c856f06a7c3d_last_value",
+        "io_thermometers_state_64adb1ba3939e3473a8ab9a3_last_value",
+        "io_last_boiler_state_target_temp",
+        "io_last_boiler_state_power",
+    } <= metric_names
 
-    points = poller.get_metric_series("zont", "12000", "io_t_room", None, None)
+    points = poller.get_metric_series(
+        "zont",
+        "12000",
+        "io_thermometers_state_600ff17fdcc0c856f06a7c3d_last_value",
+        None,
+        None,
+    )
     assert len(points) == 1
-    assert points[0]["value"] == 21.5
+    assert points[0]["value"] == 22.9
 
 
 def test_zont_refresh_interval_180_is_valid(monkeypatch, tmp_path):

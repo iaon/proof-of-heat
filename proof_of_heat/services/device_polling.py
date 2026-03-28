@@ -234,7 +234,7 @@ class DevicePoller:
 
         with self._lock:
             self._latest_payloads[key] = {
-                "timestamp": datetime.utcnow().isoformat(),
+                "timestamp": datetime.now(timezone.utc).isoformat(),
                 "payload": payload,
             }
 
@@ -792,31 +792,35 @@ class DevicePoller:
 
     def _extract_zont_metrics(self, payload: dict[str, Any]) -> list[MetricSample]:
         metrics: list[MetricSample] = []
-        for key, value in payload.items():
-            if key == "io":
-                continue
-            metric_name = self._sanitize_metric_name(str(key))
-            numeric = self._safe_float(value)
-            if numeric is not None:
-                metrics.append(MetricSample(name=metric_name, value=numeric))
-
-        io_entries = payload.get("io")
-        if isinstance(io_entries, list):
-            for idx, entry in enumerate(io_entries):
-                if not isinstance(entry, dict):
-                    continue
-                base_name = (
-                    entry.get("portname")
-                    or entry.get("name")
-                    or entry.get("id")
-                    or f"io_{idx}"
-                )
-                metric_name = self._sanitize_metric_name(f"io_{base_name}")
-                numeric = self._safe_float(entry.get("value"))
-                if numeric is None:
-                    continue
-                metrics.append(MetricSample(name=metric_name, value=numeric))
+        self._collect_zont_metrics(payload, prefix="", metrics=metrics)
         return metrics
+
+    def _collect_zont_metrics(
+        self,
+        value: Any,
+        prefix: str,
+        metrics: list[MetricSample],
+    ) -> None:
+        if isinstance(value, dict):
+            for key, child_value in value.items():
+                key_part = self._sanitize_metric_name(str(key))
+                child_prefix = f"{prefix}_{key_part}" if prefix else key_part
+                self._collect_zont_metrics(child_value, child_prefix, metrics)
+            return
+
+        if isinstance(value, list):
+            for idx, child_value in enumerate(value):
+                child_prefix = f"{prefix}_{idx}" if prefix else str(idx)
+                self._collect_zont_metrics(child_value, child_prefix, metrics)
+            return
+
+        if not prefix:
+            return
+
+        numeric = self._safe_float(value)
+        if numeric is None:
+            return
+        metrics.append(MetricSample(name=prefix, value=numeric))
 
     def _sanitize_metric_name(self, raw_name: str) -> str:
         normalized = re.sub(r"[^0-9a-zA-Z_]+", "_", raw_name.strip())
