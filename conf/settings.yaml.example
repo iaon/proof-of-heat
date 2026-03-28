@@ -4,13 +4,6 @@ location:
   longitude: 37.6173
   timezone: "Europe/Moscow"
 integrations:
-  weather:
-    - provider: "open_meteo"
-      priority: 1
-      enabled: true
-    - provider: "met_no"
-      priority: 2
-      enabled: true
   zont_api:
     - id: 1
       headers:
@@ -19,6 +12,12 @@ integrations:
       password: "password"
 devices:
   refresh_interval: 30
+  open_meteo:
+    - device_id: 1001
+      type: "virtual"
+  met_no:
+    - device_id: 1002
+      type: "virtual"
   zont:
     - integration_id: 1
       device_id: 12000

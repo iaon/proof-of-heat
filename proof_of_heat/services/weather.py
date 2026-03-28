@@ -28,6 +28,7 @@ def fetch_open_meteo_weather(
 
     return {
         "provider": "open_meteo",
+        "timestamp": payload.get("current_weather", {}).get("time"),
         "current": payload.get("current_weather"),
         "units": payload.get("current_weather_units"),
         "source": {
@@ -60,6 +61,7 @@ def fetch_met_no_weather(
     )
     return {
         "provider": "met_no",
+        "timestamp": first_entry.get("time"),
         "current": instant_details,
         "units": {
             "air_temperature": "celsius",

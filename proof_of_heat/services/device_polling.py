@@ -7,7 +7,7 @@ import socket
 import sqlite3
 import subprocess
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from threading import Lock
 from typing import Any, Callable
@@ -18,6 +18,7 @@ from apscheduler.triggers.cron import CronTrigger
 from whatsminer_cli import DEFAULT_PORT, DEFAULT_TIMEOUT, call_whatsminer
 
 from proof_of_heat.logging_utils import TRACE_LEVEL, ensure_trace_level
+from proof_of_heat.services.weather import fetch_met_no_weather, fetch_open_meteo_weather
 
 ensure_trace_level()
 logger = logging.getLogger("proof_of_heat.device_polling")
@@ -27,6 +28,13 @@ logger = logging.getLogger("proof_of_heat.device_polling")
 class DeviceKey:
     device_type: str
     device_id: str
+
+
+@dataclass(frozen=True)
+class MetricSample:
+    name: str
+    value: float
+    unit: str | None = None
 
 
 class DevicePoller:
@@ -46,6 +54,7 @@ class DevicePoller:
 
         default_interval = int(devices.get("refresh_interval", 30) or 30)
         poll_jobs: list[tuple[DeviceKey, dict[str, Any], Callable[..., dict[str, Any]]]] = []
+        seen_weather_device_ids: set[int] = set()
 
         for device in devices.get("zont", []) or []:
             device_id = str(device.get("device_id", "unknown"))
@@ -54,6 +63,26 @@ class DevicePoller:
         for device in devices.get("whatsminer", []) or []:
             device_id = str(device.get("device_id", "unknown"))
             poll_jobs.append((DeviceKey("whatsminer", device_id), device, self.poll_whatsminer_device))
+
+        for device in devices.get("open_meteo", []) or []:
+            weather_device_id = self._normalize_weather_device_id(device)
+            if weather_device_id is None:
+                continue
+            if weather_device_id in seen_weather_device_ids:
+                logger.warning("Duplicate weather device_id=%s; skipping open_meteo device", weather_device_id)
+                continue
+            seen_weather_device_ids.add(weather_device_id)
+            poll_jobs.append((DeviceKey("open_meteo", str(weather_device_id)), device, self.poll_open_meteo_device))
+
+        for device in devices.get("met_no", []) or []:
+            weather_device_id = self._normalize_weather_device_id(device)
+            if weather_device_id is None:
+                continue
+            if weather_device_id in seen_weather_device_ids:
+                logger.warning("Duplicate weather device_id=%s; skipping met_no device", weather_device_id)
+                continue
+            seen_weather_device_ids.add(weather_device_id)
+            poll_jobs.append((DeviceKey("met_no", str(weather_device_id)), device, self.poll_met_no_device))
 
         if not poll_jobs:
             logger.info("No devices configured for polling")
@@ -81,6 +110,8 @@ class DevicePoller:
             )
 
         self._scheduler.start()
+        for key, device, handler in poll_jobs:
+            self._poll_device(key, device, handler)
 
     def shutdown(self) -> None:
         if self._scheduler:
@@ -270,6 +301,60 @@ class DevicePoller:
                     )
         return response
 
+    def poll_open_meteo_device(
+        self, device: dict[str, Any], request: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        del request
+        location = self._load_location()
+        weather_device_id = self._normalize_weather_device_id(device)
+        device_id = str(weather_device_id) if weather_device_id is not None else "unknown"
+        if location is None:
+            return {
+                "provider": "open_meteo",
+                "device_id": device_id,
+                "type": str(device.get("type", "virtual")),
+                "error": "Missing or invalid location settings",
+            }
+        payload = fetch_open_meteo_weather(
+            latitude=location["latitude"],
+            longitude=location["longitude"],
+            timezone=str(location.get("timezone") or "auto"),
+            timeout_s=float(device.get("timeout_s", 10.0) or 10.0),
+        )
+        return self._persist_weather_payload(
+            device_type="open_meteo",
+            device=device,
+            payload=payload,
+            location=location,
+        )
+
+    def poll_met_no_device(
+        self, device: dict[str, Any], request: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        del request
+        location = self._load_location()
+        weather_device_id = self._normalize_weather_device_id(device)
+        device_id = str(weather_device_id) if weather_device_id is not None else "unknown"
+        if location is None:
+            return {
+                "provider": "met_no",
+                "device_id": device_id,
+                "type": str(device.get("type", "virtual")),
+                "error": "Missing or invalid location settings",
+            }
+        payload = fetch_met_no_weather(
+            latitude=location["latitude"],
+            longitude=location["longitude"],
+            altitude_m=location.get("altitude_m"),
+            timeout_s=float(device.get("timeout_s", 10.0) or 10.0),
+        )
+        return self._persist_weather_payload(
+            device_type="met_no",
+            device=device,
+            payload=payload,
+            location=location,
+        )
+
     def _ping_host(self, host: str, port: int, timeout_s: int = 1) -> bool:
         if not host:
             return False
@@ -341,7 +426,7 @@ class DevicePoller:
         ts_ms: int,
         device_type: str,
         device_id: str,
-        metrics: dict[str, float],
+        metrics: list[MetricSample],
     ) -> None:
         if not self._db_path or not metrics:
             return
@@ -350,10 +435,11 @@ class DevicePoller:
                 "ts": ts_ms,
                 "device_type": device_type,
                 "device_id": device_id,
-                "metric": name,
-                "value": value,
+                "metric": sample.name,
+                "value": sample.value,
+                "unit": sample.unit,
             }
-            for name, value in metrics.items()
+            for sample in metrics
         ]
         with self._db_lock:
             with sqlite3.connect(self._db_path) as conn:
@@ -365,13 +451,15 @@ class DevicePoller:
                         device_type,
                         device_id,
                         metric,
-                        value
+                        value,
+                        unit
                     ) VALUES (
                         :ts,
                         :device_type,
                         :device_id,
                         :metric,
-                        :value
+                        :value,
+                        :unit
                     )
                     """,
                     rows,
@@ -401,6 +489,16 @@ class DevicePoller:
             ON raw_events (device_type, ts)
             """
         )
+        self._ensure_columns(
+            conn,
+            table_name="raw_events",
+            expected_columns={
+                "ts": "INTEGER NOT NULL",
+                "device_type": "TEXT NOT NULL",
+                "device_id": "TEXT NOT NULL",
+                "payload": "TEXT NOT NULL",
+            },
+        )
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS metrics (
@@ -422,24 +520,158 @@ class DevicePoller:
             ON metrics (device_id, metric, ts)
             """
         )
+        self._ensure_columns(
+            conn,
+            table_name="metrics",
+            expected_columns={
+                "ts": "INTEGER NOT NULL",
+                "device_type": "TEXT NOT NULL",
+                "device_id": "TEXT NOT NULL",
+                "metric": "TEXT NOT NULL",
+                "value": "REAL NOT NULL",
+                "unit": "TEXT",
+                "labels": "TEXT",
+                "component": "TEXT",
+            },
+        )
 
-    def _extract_whatsminer_metrics(self, summary: dict[str, Any]) -> dict[str, float]:
-        metrics: dict[str, float] = {}
+    def _ensure_columns(
+        self,
+        conn: sqlite3.Connection,
+        table_name: str,
+        expected_columns: dict[str, str],
+    ) -> None:
+        existing_columns = {
+            str(row[1])
+            for row in conn.execute(f"PRAGMA table_info({table_name})").fetchall()
+            if len(row) > 1
+        }
+        for column_name, column_spec in expected_columns.items():
+            if column_name in existing_columns:
+                continue
+            conn.execute(
+                f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_spec}"
+            )
+            logger.info(
+                "Migrated SQLite table %s by adding missing column %s",
+                table_name,
+                column_name,
+            )
+
+    def _extract_whatsminer_metrics(self, summary: dict[str, Any]) -> list[MetricSample]:
+        metrics: list[MetricSample] = []
         for key, value in summary.items():
             if key == "board-temperature":
                 continue
             numeric = self._safe_float(value)
             if numeric is None:
                 continue
-            metrics[key.replace("-", "_")] = numeric
+            metrics.append(MetricSample(name=key.replace("-", "_"), value=numeric))
         board_temps = summary.get("board-temperature")
         if isinstance(board_temps, list):
             for idx, value in enumerate(board_temps):
                 numeric = self._safe_float(value)
                 if numeric is None:
                     continue
-                metrics[f"board_temperature_{idx}"] = numeric
+                metrics.append(MetricSample(name=f"board_temperature_{idx}", value=numeric))
         return metrics
+
+    def _persist_weather_payload(
+        self,
+        device_type: str,
+        device: dict[str, Any],
+        payload: dict[str, Any],
+        location: dict[str, Any],
+    ) -> dict[str, Any]:
+        device_id = str(device.get("device_id", device_type))
+        enriched_payload = {
+            **payload,
+            "device_id": device_id,
+            "type": str(device.get("type", "virtual")),
+            "location": location,
+        }
+        ts_ms = self._to_epoch_ms(payload.get("timestamp"))
+        if self._db_path:
+            self._write_raw_event(
+                ts_ms=ts_ms,
+                device_type=device_type,
+                device_id=device_id,
+                payload=enriched_payload,
+            )
+            metrics = self._extract_weather_metrics(
+                enriched_payload.get("current"),
+                enriched_payload.get("units"),
+            )
+            if metrics:
+                self._write_metrics(
+                    ts_ms=ts_ms,
+                    device_type=device_type,
+                    device_id=device_id,
+                    metrics=metrics,
+                )
+        return enriched_payload
+
+    def _extract_weather_metrics(
+        self,
+        payload: Any,
+        units: dict[str, Any] | None = None,
+    ) -> list[MetricSample]:
+        metrics: list[MetricSample] = []
+        if not isinstance(payload, dict):
+            return metrics
+        for key, value in payload.items():
+            metric_name = str(key).replace("-", "_")
+            unit = units.get(key) if isinstance(units, dict) else None
+            metrics.extend(self._flatten_metric_samples(metric_name, value, unit))
+        return metrics
+
+    def _flatten_metric_samples(
+        self,
+        name: str,
+        value: Any,
+        unit: str | None = None,
+    ) -> list[MetricSample]:
+        if isinstance(value, dict):
+            samples: list[MetricSample] = []
+            for child_key, child_value in value.items():
+                child_name = f"{name}_{str(child_key).replace('-', '_')}"
+                samples.extend(self._flatten_metric_samples(child_name, child_value))
+            return samples
+        if isinstance(value, list):
+            samples: list[MetricSample] = []
+            for idx, item in enumerate(value):
+                samples.extend(self._flatten_metric_samples(f"{name}_{idx}", item))
+            return samples
+        numeric = self._safe_float(value)
+        if numeric is None:
+            return []
+        return [MetricSample(name=name, value=numeric, unit=unit)]
+
+    def _load_location(self) -> dict[str, Any] | None:
+        if not isinstance(self._settings, dict):
+            return None
+        location = self._settings.get("location")
+        if not isinstance(location, dict):
+            return None
+        latitude = location.get("latitude")
+        longitude = location.get("longitude")
+        altitude_m = location.get("altitude_m")
+        if not isinstance(latitude, (int, float)) or not isinstance(longitude, (int, float)):
+            return None
+        return {
+            "name": location.get("name"),
+            "latitude": float(latitude),
+            "longitude": float(longitude),
+            "altitude_m": int(altitude_m) if isinstance(altitude_m, (int, float)) else None,
+            "timezone": location.get("timezone", "auto"),
+        }
+
+    def _normalize_weather_device_id(self, device: dict[str, Any]) -> int | None:
+        try:
+            return int(device.get("device_id"))
+        except (TypeError, ValueError):
+            logger.warning("Weather device is missing integer device_id: %s", device)
+            return None
 
     def _safe_float(self, value: Any) -> float | None:
         if value is None:
@@ -460,6 +692,14 @@ class DevicePoller:
     def _to_epoch_ms(self, when_ts: Any) -> int:
         if when_ts is None:
             return int(datetime.utcnow().timestamp() * 1000)
+        if isinstance(when_ts, str):
+            try:
+                dt = datetime.fromisoformat(when_ts.replace("Z", "+00:00"))
+            except ValueError:
+                return int(datetime.utcnow().timestamp() * 1000)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return int(dt.timestamp() * 1000)
         value = self._safe_int(when_ts)
         if value is None:
             return int(datetime.utcnow().timestamp() * 1000)

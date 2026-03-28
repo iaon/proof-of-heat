@@ -130,10 +130,6 @@ try:  # Lazy import to allow a diagnostic ASGI fallback if dependencies are miss
     )
     from proof_of_heat.services.device_polling import DevicePoller
     from proof_of_heat.services.temperature_control import TemperatureController
-    from proof_of_heat.services.weather import (
-        fetch_met_no_weather,
-        fetch_open_meteo_weather,
-    )
 except Exception as exc:  # pragma: no cover - defensive import guard
     FastAPI = None  # type: ignore[assignment]
     HTTPException = Exception  # type: ignore[assignment]
@@ -141,7 +137,6 @@ except Exception as exc:  # pragma: no cover - defensive import guard
     HTMLResponse = JSONResponse = None  # type: ignore[assignment]
     DEFAULT_CONFIG = AppConfig = human_readable_mode = Whatsminer = TemperatureController = None  # type: ignore[assignment]
     load_settings_yaml = parse_settings_yaml = save_settings_yaml = None  # type: ignore[assignment]
-    fetch_met_no_weather = fetch_open_meteo_weather = None  # type: ignore[assignment]
     _startup_error = exc
 
 
@@ -732,55 +727,42 @@ def create_app(config: AppConfig = DEFAULT_CONFIG) -> FastAPI:
             dt = dt.replace(tzinfo=timezone.utc)
         return int(dt.timestamp() * 1000)
 
-    def _load_location(settings_data: Dict[str, Any]) -> Dict[str, Any] | None:
-        if not isinstance(settings_data, dict):
-            return None
-        location = settings_data.get("location")
-        if not isinstance(location, dict):
-            return None
-        latitude = location.get("latitude")
-        longitude = location.get("longitude")
-        altitude_m = location.get("altitude_m")
-        if not isinstance(latitude, (int, float)) or not isinstance(longitude, (int, float)):
-            return None
-        return {
-            "name": location.get("name"),
-            "latitude": float(latitude),
-            "longitude": float(longitude),
-            "altitude_m": int(altitude_m) if isinstance(altitude_m, (int, float)) else None,
-            "timezone": location.get("timezone", "auto"),
-        }
-
-    def _load_weather_sources(settings_data: Dict[str, Any]) -> list[Dict[str, Any]]:
+    def _load_configured_devices(
+        settings_data: Dict[str, Any],
+        device_type: str,
+    ) -> list[Dict[str, Any]]:
         if not isinstance(settings_data, dict):
             return []
-        integrations = settings_data.get("integrations")
-        if not isinstance(integrations, dict):
+        devices = settings_data.get("devices")
+        if not isinstance(devices, dict):
             return []
-        sources = integrations.get("weather")
-        if not isinstance(sources, list):
+        configured = devices.get(device_type)
+        if not isinstance(configured, list):
             return []
         normalized: list[Dict[str, Any]] = []
-        for source in sources:
-            if not isinstance(source, dict):
+        for device in configured:
+            if not isinstance(device, dict):
                 continue
-            provider = source.get("provider")
-            if not provider:
-                continue
-            priority = source.get("priority", 100)
-            enabled = bool(source.get("enabled", True))
-            try:
-                priority_value = int(priority)
-            except (TypeError, ValueError):
-                priority_value = 100
+            device_id = device.get("device_id", device_type)
+            if device_type in {"open_meteo", "met_no"}:
+                try:
+                    device_id = int(device_id)
+                except (TypeError, ValueError):
+                    continue
             normalized.append(
                 {
-                    "provider": str(provider),
-                    "priority": priority_value,
-                    "enabled": enabled,
+                    "device_type": device_type,
+                    "device_id": str(device_id),
+                    "type": device.get("type"),
+                    "config": device,
                 }
             )
-        return sorted(normalized, key=lambda item: item["priority"])
+        return normalized
+
+    def _load_weather_devices(settings_data: Dict[str, Any]) -> list[Dict[str, Any]]:
+        devices = _load_configured_devices(settings_data, "open_meteo")
+        devices.extend(_load_configured_devices(settings_data, "met_no"))
+        return devices
 
     @app.get("/status")
     def status() -> Dict[str, Any]:
@@ -788,58 +770,20 @@ def create_app(config: AppConfig = DEFAULT_CONFIG) -> FastAPI:
         snapshot = controller.record_snapshot(indoor_temp_c=21.0, miner_status=miner_status)
         raw_yaml = load_settings_yaml()
         settings_data = parse_settings_yaml(raw_yaml)
-        location = _load_location(settings_data)
+        latest_payloads = device_poller.get_latest_payloads()
         weather_payload: Dict[str, Any] | None = None
-        if location:
-            sources = _load_weather_sources(settings_data)
-            last_error: Dict[str, Any] | None = None
-            for source in sources:
-                if not source["enabled"]:
-                    continue
-                provider = source["provider"]
-                if provider == "open_meteo":
-                    try:
-                        weather_payload = fetch_open_meteo_weather(
-                            latitude=location["latitude"],
-                            longitude=location["longitude"],
-                            timezone=location["timezone"],
-                        )
-                        weather_payload["priority"] = source["priority"]
-                        break
-                    except Exception as exc:  # pragma: no cover - network defensive fallback
-                        last_error = {
-                            "provider": provider,
-                            "error": str(exc),
-                            "priority": source["priority"],
-                        }
-                        continue
-                if provider == "met_no":
-                    try:
-                        weather_payload = fetch_met_no_weather(
-                            latitude=location["latitude"],
-                            longitude=location["longitude"],
-                            altitude_m=location.get("altitude_m"),
-                        )
-                        weather_payload["priority"] = source["priority"]
-                        break
-                    except Exception as exc:  # pragma: no cover - network defensive fallback
-                        last_error = {
-                            "provider": provider,
-                            "error": str(exc),
-                            "priority": source["priority"],
-                        }
-                        continue
-                else:
-                    last_error = {
-                        "provider": provider,
-                        "error": "Unsupported weather provider.",
-                        "priority": source["priority"],
-                    }
-                    continue
-            if weather_payload is None and last_error is not None:
-                weather_payload = last_error
-        if weather_payload is not None:
-            weather_payload = {"location": location, **weather_payload}
+        for source in _load_weather_devices(settings_data):
+            latest = latest_payloads.get(f"{source['device_type']}:{source['device_id']}")
+            if not latest:
+                continue
+            payload = latest.get("payload")
+            if not isinstance(payload, dict):
+                continue
+            weather_payload = {
+                **payload,
+                "polled_at": latest.get("timestamp"),
+            }
+            break
         return {
             "mode": config.mode,
             "mode_label": human_readable_mode(config.mode),
@@ -881,24 +825,16 @@ def create_app(config: AppConfig = DEFAULT_CONFIG) -> FastAPI:
     def devices_view() -> HTMLResponse:
         raw_yaml = load_settings_yaml()
         settings_data = parse_settings_yaml(raw_yaml)
-        devices = settings_data.get("devices", {}) if isinstance(settings_data, dict) else {}
-        zont_devices = devices.get("zont", []) if isinstance(devices, dict) else []
-        whatsminer_devices = devices.get("whatsminer", []) if isinstance(devices, dict) else []
         latest_payloads = device_poller.get_latest_payloads()
 
         cards = []
-        for device in zont_devices or []:
-            label = f"zont {device.get('device_id', 'unknown')}"
-            payload = latest_payloads.get(f"zont:{device.get('device_id', 'unknown')}", {})
-            cards.append((label, payload))
-
-        for device in whatsminer_devices or []:
-            label = f"whatsminer {device.get('device_id', 'unknown')}"
-            payload = latest_payloads.get(
-                f"whatsminer:{device.get('device_id', 'unknown')}",
-                {},
-            )
-            cards.append((label, payload))
+        for device_type in ("zont", "whatsminer", "open_meteo", "met_no"):
+            for device in _load_configured_devices(settings_data, device_type):
+                label = f"{device_type} {device['device_id']}"
+                if device.get("type"):
+                    label = f"{label} ({device['type']})"
+                payload = latest_payloads.get(f"{device_type}:{device['device_id']}", {})
+                cards.append((label, payload))
 
         card_markup = ""
         for label, payload in cards:

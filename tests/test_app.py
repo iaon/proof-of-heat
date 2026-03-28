@@ -1,5 +1,3 @@
-from pathlib import Path
-from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 
 from fastapi import FastAPI
@@ -48,6 +46,8 @@ class DummyController:
 
 
 class DummyDevicePoller:
+    latest_payloads = {}
+
     def __init__(self, settings_data, data_dir=None):
         self.settings_data = settings_data
         self.data_dir = data_dir
@@ -74,17 +74,19 @@ class DummyDevicePoller:
         return []
 
     def get_latest_payloads(self):
-        return {}
+        return self.latest_payloads.copy()
 
 
-def build_routes(tmp_path, monkeypatch):
+def build_routes(tmp_path, monkeypatch, parsed_settings=None, latest_payloads=None):
+    settings = parsed_settings or {"devices": {}}
+    DummyDevicePoller.latest_payloads = latest_payloads or {}
     monkeypatch.setattr(main, "Whatsminer", DummyMiner, raising=False)
     monkeypatch.setattr(main, "TemperatureController", DummyController, raising=False)
     monkeypatch.setattr(main, "DevicePoller", DummyDevicePoller, raising=False)
     monkeypatch.setattr(main, "human_readable_mode", lambda mode: mode.title(), raising=False)
     monkeypatch.setattr(main, "load_settings_yaml", lambda: "devices: {}\n", raising=False)
-    monkeypatch.setattr(main, "parse_settings_yaml", lambda raw_yaml: {"devices": {}}, raising=False)
-    monkeypatch.setattr(main, "save_settings_yaml", lambda raw_yaml: {"devices": {}}, raising=False)
+    monkeypatch.setattr(main, "parse_settings_yaml", lambda raw_yaml: settings, raising=False)
+    monkeypatch.setattr(main, "save_settings_yaml", lambda raw_yaml: settings, raising=False)
     monkeypatch.setattr(main, "FastAPI", FastAPI, raising=False)
     monkeypatch.setattr(main, "HTMLResponse", HTMLResponse, raising=False)
     monkeypatch.setattr(main, "JSONResponse", JSONResponse, raising=False)
@@ -152,3 +154,70 @@ def test_status_snapshot(tmp_path, monkeypatch):
     assert payload["mode"] == "comfort"
     assert payload["target_temperature_c"]
     assert payload["latest_snapshot"]["miner_status"]["power"] == 1000
+
+
+def test_status_uses_virtual_weather_device_payload(tmp_path, monkeypatch):
+    parsed_settings = {
+        "devices": {
+            "open_meteo": [
+                {
+                    "device_id": 1001,
+                    "type": "virtual",
+                }
+            ]
+        }
+    }
+    latest_payloads = {
+        "open_meteo:1001": {
+            "timestamp": "2026-03-29T10:15:00",
+            "payload": {
+                "provider": "open_meteo",
+                "device_id": "1001",
+                "type": "virtual",
+                "location": {"name": "Moscow"},
+                "current": {"temperature": 4.2},
+            },
+        }
+    }
+
+    routes = build_routes(
+        tmp_path,
+        monkeypatch,
+        parsed_settings=parsed_settings,
+        latest_payloads=latest_payloads,
+    )
+    payload = routes["/status"]()
+
+    assert payload["weather"]["provider"] == "open_meteo"
+    assert payload["weather"]["type"] == "virtual"
+    assert payload["weather"]["polled_at"] == "2026-03-29T10:15:00"
+
+
+def test_devices_view_lists_virtual_weather_devices(tmp_path, monkeypatch):
+    parsed_settings = {
+        "devices": {
+            "open_meteo": [
+                {
+                    "device_id": 1001,
+                    "type": "virtual",
+                }
+            ]
+        }
+    }
+    latest_payloads = {
+        "open_meteo:1001": {
+            "timestamp": "2026-03-29T10:15:00",
+            "payload": {"provider": "open_meteo", "current": {"temperature": 4.2}},
+        }
+    }
+
+    routes = build_routes(
+        tmp_path,
+        monkeypatch,
+        parsed_settings=parsed_settings,
+        latest_payloads=latest_payloads,
+    )
+    resp = routes["/devices"]()
+    body = resp.body.decode()
+
+    assert "open_meteo 1001 (virtual)" in body
