@@ -269,3 +269,110 @@ def test_met_no_metrics_use_poll_time_instead_of_provider_hour_bucket(monkeypatc
     assert distinct_ts == (2,)
     assert provider_ts is not None
     assert int(provider_ts[0]) == poller._to_epoch_ms("2026-03-29T10:00:00+00:00")
+
+
+def test_zont_device_selected_by_serial_and_metrics_persisted(monkeypatch, tmp_path):
+    settings = {
+        "integrations": {
+            "zont_api": [
+                {
+                    "id": 1,
+                    "headers": {"X-ZONT-Client": "test@example.com"},
+                    "login": "login",
+                    "password": "password",
+                }
+            ]
+        },
+        "devices": {
+            "zont": [
+                {
+                    "integration_id": 1,
+                    "device_id": 12000,
+                    "serial": "SN-NEEDED",
+                }
+            ]
+        },
+    }
+
+    class _FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {
+                "ok": True,
+                "devices": [
+                    {
+                        "serial": "SN-OTHER",
+                        "temp_out": 1.0,
+                        "io": [{"portname": "t_room", "value": 18.5}],
+                    },
+                    {
+                        "serial": "SN-NEEDED",
+                        "temp_out": 3.2,
+                        "io": [
+                            {"portname": "t_room", "value": 21.5},
+                            {"portname": "relay", "value": 1},
+                        ],
+                    },
+                ],
+            }
+
+    class _FakeClient:
+        def __init__(self, timeout):
+            self.timeout = timeout
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def post(self, url, headers, json, auth):
+            assert url == "https://my.zont.online/api/devices"
+            assert headers["X-ZONT-Client"] == "test@example.com"
+            assert json["load_io"] is True
+            assert auth == ("login", "password")
+            return _FakeResponse()
+
+    monkeypatch.setattr(device_polling.httpx, "Client", _FakeClient)
+
+    poller = DevicePoller(settings, data_dir=tmp_path)
+    payload = poller.poll_zont_device(settings["devices"]["zont"][0])
+
+    assert payload["provider"] == "zont"
+    assert payload["serial"] == "SN-NEEDED"
+    assert payload["device_id"] == "12000"
+
+    metric_names = set(poller.list_metric_names("zont", "12000"))
+    assert {"temp_out", "io_t_room", "io_relay"} <= metric_names
+
+    points = poller.get_metric_series("zont", "12000", "io_t_room", None, None)
+    assert len(points) == 1
+    assert points[0]["value"] == 21.5
+
+
+def test_zont_refresh_interval_180_is_valid(monkeypatch, tmp_path):
+    settings = {
+        "devices": {
+            "refresh_interval": 30,
+            "zont": [
+                {
+                    "integration_id": 1,
+                    "device_id": 12000,
+                    "serial": "SN-NEEDED",
+                    "refresh_interval": 180,
+                }
+            ],
+        }
+    }
+
+    poller = DevicePoller(settings, data_dir=tmp_path)
+    poller.start()
+    try:
+        assert poller._scheduler is not None
+        jobs = poller._scheduler.get_jobs()
+        assert len(jobs) == 1
+        assert "interval[0:03:00]" in str(jobs[0].trigger)
+    finally:
+        poller.shutdown()

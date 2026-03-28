@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import shutil
 import socket
 import sqlite3
@@ -12,9 +13,10 @@ from pathlib import Path
 from threading import Lock
 from typing import Any, Callable
 
+import httpx
 from apscheduler.executors.pool import ThreadPoolExecutor
 from apscheduler.schedulers.background import BackgroundScheduler
-from apscheduler.triggers.cron import CronTrigger
+from apscheduler.triggers.interval import IntervalTrigger
 from whatsminer_cli import DEFAULT_PORT, DEFAULT_TIMEOUT, call_whatsminer
 
 from proof_of_heat.logging_utils import TRACE_LEVEL, ensure_trace_level
@@ -57,7 +59,7 @@ class DevicePoller:
         seen_weather_device_ids: set[int] = set()
 
         for device in devices.get("zont", []) or []:
-            device_id = str(device.get("device_id", "unknown"))
+            device_id = str(device.get("device_id") or device.get("serial") or "unknown")
             poll_jobs.append((DeviceKey("zont", device_id), device, self.poll_zont_device))
 
         for device in devices.get("whatsminer", []) or []:
@@ -92,8 +94,10 @@ class DevicePoller:
         self._scheduler = BackgroundScheduler(executors={"default": executor})
 
         for key, device, handler in poll_jobs:
-            interval = int(device.get("refresh_interval", default_interval) or default_interval)
-            trigger = CronTrigger(second=f"*/{interval}")
+            interval_default = 180 if key.device_type == "zont" else default_interval
+            interval = int(device.get("refresh_interval", interval_default) or interval_default)
+            interval = max(1, interval)
+            trigger = IntervalTrigger(seconds=interval)
             job_id = f"{key.device_type}-{key.device_id}"
             self._scheduler.add_job(
                 self._poll_device,
@@ -235,12 +239,103 @@ class DevicePoller:
             }
 
     def poll_zont_device(self, device: dict[str, Any], request: dict[str, Any] | None = None) -> dict[str, Any]:
-        logger.debug("Polling Zont device %s with request %s", device, request)
-        return {
-            "status": "stub",
-            "device_id": device.get("device_id"),
-            "request": request,
+        del request
+        serial = str(device.get("serial", "")).strip()
+        if not serial:
+            return {
+                "error": "Missing zont serial",
+                "device_id": str(device.get("device_id") or "unknown"),
+            }
+
+        integration = self._resolve_zont_integration(device)
+        if integration is None:
+            return {
+                "error": "Missing zont integration credentials",
+                "serial": serial,
+            }
+
+        headers = integration.get("headers")
+        if not isinstance(headers, dict):
+            headers = {}
+        zont_client = headers.get("X-ZONT-Client")
+        login = integration.get("login")
+        password = integration.get("password")
+        if not zont_client or not login or not password:
+            return {
+                "error": "Missing zont login/password or X-ZONT-Client header",
+                "serial": serial,
+            }
+
+        timeout_s = float(device.get("timeout_s", 15.0) or 15.0)
+        try:
+            with httpx.Client(timeout=timeout_s) as client:
+                response = client.post(
+                    "https://my.zont.online/api/devices",
+                    headers={
+                        **headers,
+                        "Content-Type": "application/json",
+                    },
+                    json={"load_io": bool(device.get("load_io", True))},
+                    auth=(str(login), str(password)),
+                )
+                response.raise_for_status()
+                payload = response.json()
+        except Exception as exc:  # pragma: no cover - defensive fallback
+            return {"error": f"ZONT request failed: {exc}", "serial": serial}
+
+        devices_payload = payload.get("devices")
+        if not payload.get("ok") or not isinstance(devices_payload, list):
+            return {
+                "error": "Unexpected ZONT response",
+                "serial": serial,
+                "response": payload,
+            }
+
+        serial_norm = serial.upper()
+        matched = next(
+            (
+                item
+                for item in devices_payload
+                if isinstance(item, dict) and str(item.get("serial", "")).upper() == serial_norm
+            ),
+            None,
+        )
+        if not matched:
+            return {
+                "error": "ZONT device with configured serial not found",
+                "serial": serial,
+                "available_serials": [
+                    str(item.get("serial"))
+                    for item in devices_payload
+                    if isinstance(item, dict) and item.get("serial")
+                ],
+            }
+
+        device_id = str(device.get("device_id") or serial)
+        result = {
+            "provider": "zont",
+            "serial": serial,
+            "device_id": device_id,
+            "integration_id": integration.get("id"),
+            "device": matched,
         }
+        ts_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+        if self._db_path:
+            self._write_raw_event(
+                ts_ms=ts_ms,
+                device_type="zont",
+                device_id=device_id,
+                payload=result,
+            )
+            metrics = self._extract_zont_metrics(matched)
+            if metrics:
+                self._write_metrics(
+                    ts_ms=ts_ms,
+                    device_type="zont",
+                    device_id=device_id,
+                    metrics=metrics,
+                )
+        return result
 
     def poll_whatsminer_device(
         self, device: dict[str, Any], request: dict[str, Any] | None = None
@@ -674,6 +769,59 @@ class DevicePoller:
         except (TypeError, ValueError):
             logger.warning("Weather device is missing integer device_id: %s", device)
             return None
+
+    def _resolve_zont_integration(self, device: dict[str, Any]) -> dict[str, Any] | None:
+        if not isinstance(self._settings, dict):
+            return None
+        integrations = self._settings.get("integrations")
+        if not isinstance(integrations, dict):
+            return None
+        zont_integrations = integrations.get("zont_api")
+        if not isinstance(zont_integrations, list):
+            return None
+        requested_id = device.get("integration_id")
+        if requested_id is None:
+            return zont_integrations[0] if zont_integrations else None
+        requested_id_str = str(requested_id)
+        for integration in zont_integrations:
+            if not isinstance(integration, dict):
+                continue
+            if str(integration.get("id")) == requested_id_str:
+                return integration
+        return None
+
+    def _extract_zont_metrics(self, payload: dict[str, Any]) -> list[MetricSample]:
+        metrics: list[MetricSample] = []
+        for key, value in payload.items():
+            if key == "io":
+                continue
+            metric_name = self._sanitize_metric_name(str(key))
+            numeric = self._safe_float(value)
+            if numeric is not None:
+                metrics.append(MetricSample(name=metric_name, value=numeric))
+
+        io_entries = payload.get("io")
+        if isinstance(io_entries, list):
+            for idx, entry in enumerate(io_entries):
+                if not isinstance(entry, dict):
+                    continue
+                base_name = (
+                    entry.get("portname")
+                    or entry.get("name")
+                    or entry.get("id")
+                    or f"io_{idx}"
+                )
+                metric_name = self._sanitize_metric_name(f"io_{base_name}")
+                numeric = self._safe_float(entry.get("value"))
+                if numeric is None:
+                    continue
+                metrics.append(MetricSample(name=metric_name, value=numeric))
+        return metrics
+
+    def _sanitize_metric_name(self, raw_name: str) -> str:
+        normalized = re.sub(r"[^0-9a-zA-Z_]+", "_", raw_name.strip())
+        normalized = re.sub(r"_+", "_", normalized).strip("_")
+        return normalized.lower() or "value"
 
     def _safe_float(self, value: Any) -> float | None:
         if value is None:
