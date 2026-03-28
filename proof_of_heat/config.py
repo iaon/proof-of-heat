@@ -26,6 +26,9 @@ class AppConfig(BaseModel):
         default=22.0, description="Desired ambient temperature in Celsius."
     )
     mode: str = Field(default="comfort", description="comfort | eco | off")
+    heating_curve: str = Field(
+        default="standard", description="Selected heating curve profile."
+    )
     data_dir: Path = Field(default=Path("./data"))
     miner: MinerConfig = Field(default_factory=MinerConfig)
 

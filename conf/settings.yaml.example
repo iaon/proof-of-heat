@@ -1,3 +1,4 @@
+heating_curve: "standard"
 location:
   name: "Moscow"
   latitude: 55.7558

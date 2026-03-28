@@ -85,6 +85,7 @@ Weather and device metadata live in `conf/settings.yaml` (editable from `/config
 Update `location` (latitude/longitude) to enable current weather on the status
 page, and configure `integrations.weather` with one or more sources ordered by
 `priority` (lower number wins). Available providers: `open_meteo`, `met_no`.
+Use `heating_curve` to select the active heating profile stored in settings.
 
 ## Notes
 
