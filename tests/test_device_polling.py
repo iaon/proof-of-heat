@@ -155,3 +155,53 @@ def test_metrics_table_is_migrated_in_place_for_older_sqlite_files(monkeypatch, 
     assert {"unit", "labels", "component"} <= metric_columns
     assert legacy_row == (1, "legacy", "device-1", "temp", 10.0)
     assert new_row == ("temperature", 1.5, "celsius")
+
+
+def test_open_meteo_new_current_format_is_persisted(monkeypatch, tmp_path):
+    settings = {
+        "location": {
+            "name": "Moscow",
+            "latitude": 55.7558,
+            "longitude": 37.6173,
+            "timezone": "Europe/Moscow",
+        },
+        "devices": {
+            "open_meteo": [
+                {
+                    "device_id": 1001,
+                    "type": "virtual",
+                }
+            ]
+        },
+    }
+
+    monkeypatch.setattr(
+        device_polling,
+        "fetch_open_meteo_weather",
+        lambda **kwargs: {
+            "provider": "open_meteo",
+            "timestamp": "2026-03-29T10:15:00+00:00",
+            "current": {
+                "time": "2026-03-29T10:15",
+                "temperature_2m": 6.4,
+                "relative_humidity_2m": 72,
+                "is_day": 1,
+            },
+            "units": {
+                "temperature_2m": "celsius",
+                "relative_humidity_2m": "%",
+                "is_day": "",
+            },
+            "source": kwargs,
+        },
+    )
+
+    poller = DevicePoller(settings, data_dir=tmp_path)
+    poller.poll_open_meteo_device(settings["devices"]["open_meteo"][0])
+
+    metric_names = set(poller.list_metric_names("open_meteo", "1001"))
+    assert {"temperature_2m", "relative_humidity_2m", "is_day"} <= metric_names
+
+    points = poller.get_metric_series("open_meteo", "1001", "temperature_2m", None, None)
+    assert len(points) == 1
+    assert points[0]["value"] == 6.4

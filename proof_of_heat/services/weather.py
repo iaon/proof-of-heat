@@ -26,11 +26,24 @@ def fetch_open_meteo_weather(
         response.raise_for_status()
         payload = response.json()
 
+    current = payload.get("current_weather")
+    units = payload.get("current_weather_units")
+    timestamp = None
+    if isinstance(current, dict):
+        timestamp = current.get("time")
+
+    if not isinstance(current, dict):
+        # Newer Open-Meteo responses may expose `current`/`current_units`.
+        current = payload.get("current")
+        units = payload.get("current_units")
+        if isinstance(current, dict):
+            timestamp = current.get("time")
+
     return {
         "provider": "open_meteo",
-        "timestamp": payload.get("current_weather", {}).get("time"),
-        "current": payload.get("current_weather"),
-        "units": payload.get("current_weather_units"),
+        "timestamp": timestamp,
+        "current": current,
+        "units": units,
         "source": {
             "latitude": latitude,
             "longitude": longitude,
