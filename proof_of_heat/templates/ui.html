@@ -12,59 +12,14 @@
         <a href="__ROOT_PATH__/config">Edit configuration</a>
         · <a href="__ROOT_PATH__/metrics">Metrics chart</a>
     </p>
-    <p class="muted">Quick control panel for the miner-backed heating MVP. Data refreshes live on load and whenever you click refresh.</p>
-
-    <div class="card">
-        <div class="row">
-            <strong>Status</strong>
-            <button id="refresh">Refresh</button>
-        </div>
-        <pre id="status">Loading...</pre>
-    </div>
-
-    <div class="card">
-        <div class="row">
-            <strong>Weather</strong>
-            <span class="muted" id="weather-location"></span>
-        </div>
-        <pre id="weather">Loading...</pre>
-    </div>
+    <p class="muted">Current normalized inputs for heating control.</p>
 
     <div class="card">
         <div class="row">
             <strong>Control Inputs</strong>
+            <button id="refresh">Refresh</button>
         </div>
         <pre id="control-inputs">Loading...</pre>
-    </div>
-
-    <div class="card">
-        <div class="row">
-            <label for="target">Target °C</label>
-            <input id="target" type="number" step="0.5" min="5" max="35" />
-            <button id="apply-target" class="secondary">Set</button>
-        </div>
-        <div class="row">
-            <label for="mode">Mode</label>
-            <select id="mode">
-                <option value="comfort">Comfort</option>
-                <option value="eco">Eco</option>
-                <option value="off">Off</option>
-            </select>
-            <button id="apply-mode">Apply</button>
-        </div>
-    </div>
-
-    <div class="card">
-        <div class="row" style="margin-bottom:8px;">
-            <strong>Miner</strong>
-            <button id="start" class="secondary">Start</button>
-            <button id="stop">Stop</button>
-        </div>
-        <div class="row">
-            <label for="power">Power limit (W)</label>
-            <input id="power" type="number" min="500" max="7000" step="50" />
-            <button id="apply-power">Update</button>
-        </div>
     </div>
 
     <script>
