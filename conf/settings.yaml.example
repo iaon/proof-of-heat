@@ -16,7 +16,7 @@ devices:
     - device_id: 1001
       type: "virtual"
   met_no:
-    - device_id: 1002
+    - device_id: 2001
       type: "virtual"
   zont:
     - integration_id: 1
@@ -24,8 +24,53 @@ devices:
       serial: "0000000000"
       refresh_interval: 180
   whatsminer:
-    - device_id: 1
+    - device_id: "miner01"
       login: "login"
       password: "pass"
       host: "example.com"
       port: 1111
+control_inputs:
+  max_age_seconds: 180
+  indoor_temp:
+    select: highest_priority_available
+    sources:
+      - device_type: zont
+        device_id: "12000"
+        metric: io_thermometers_state_ab12cd34_last_value
+        correction: 0.0
+
+      - device_type: open_meteo
+        device_id: "1001"
+        metric: indoor_virtual_temperature
+        correction: -0.3
+  outdoor_temp:
+    select: highest_priority_available
+    sources:
+      - device_type: open_meteo
+        device_id: "1001"
+        metric: temperature_2m
+
+      - device_type: met_no
+        device_id: "2001"
+        metric: air_temperature
+        correction: 0.2
+  supply_temp:
+    select: highest_priority_available
+    sources:
+      - device_type: zont
+        device_id: "12000"
+        metric: boiler_feed_temp
+        correction: 1.5
+  power:
+    select: sum_all_available
+    default: 0
+    sources:
+      - device_type: whatsminer
+        device_id: "miner01"
+        metric: power
+        correction: 0
+
+      - device_type: shelly
+        device_id: "em01"
+        metric: total_active_power
+        correction: 15
