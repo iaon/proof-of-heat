@@ -103,6 +103,7 @@ control_inputs:
 
 heating_curve:
   slope: 1.2
+  exponent: 1.3
   force_max_power_below_target: true
   force_max_power_margin_c: 5.0
   min_supply_temp_c: 25.0
@@ -200,7 +201,8 @@ Current behavior:
 
 Supported fields:
 
-- `slope` — heating curve slope used for preview and control calculations.
+- `slope` — heating curve gain used for preview and control calculations.
+- `exponent` — nonlinear exponent of the heating curve. A reasonable starting value is `1.3`.
 - `force_max_power_below_target` — when enabled, force maximum power if indoor temperature is too far below target.
 - `force_max_power_margin_c` — temperature gap in Celsius between target and indoor temperature that triggers forced maximum power.
 - `min_supply_temp_c` — lower clamp for calculated supply temperature.
@@ -210,6 +212,7 @@ Current UI:
 
 - `/heating-curve` provides a dedicated editor with number inputs and a graph preview.
 - the preview assumes a 20°C indoor setpoint and plots supply temperature against outdoor temperature.
+- the preview formula is `20 + slope * (20 - outdoor_temp_c) ^ exponent`, clamped between `min_supply_temp_c` and `max_supply_temp_c`.
 
 ## Source of Truth
 

@@ -269,11 +269,13 @@ def test_heating_curve_api_reads_and_writes_section(tmp_path, monkeypatch):
 
     get_payload = routes["/api/heating-curve"]()
     assert get_payload["data"]["slope"] == 1.2
+    assert get_payload["data"]["exponent"] == 1.3
     assert get_payload["data"]["force_max_power_below_target"] is True
 
     update_payload = routes["POST /api/heating-curve"](
         {
             "slope": 1.7,
+            "exponent": 1.4,
             "force_max_power_below_target": False,
             "force_max_power_margin_c": 3.5,
             "min_supply_temp_c": 28.0,
@@ -283,6 +285,7 @@ def test_heating_curve_api_reads_and_writes_section(tmp_path, monkeypatch):
 
     assert update_payload["data"] == {
         "slope": 1.7,
+        "exponent": 1.4,
         "force_max_power_below_target": False,
         "force_max_power_margin_c": 3.5,
         "min_supply_temp_c": 28.0,

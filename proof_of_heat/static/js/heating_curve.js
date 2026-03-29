@@ -1,5 +1,6 @@
 const apiUrl = (path) => `${rootPath}${path}`;
 const slopeEl = document.getElementById("slope");
+const exponentEl = document.getElementById("exponent");
 const forceMaxPowerBelowTargetEl = document.getElementById("force-max-power-below-target");
 const forceMaxPowerMarginCEl = document.getElementById("force-max-power-margin-c");
 const minSupplyTempCEl = document.getElementById("min-supply-temp-c");
@@ -11,11 +12,13 @@ let chart;
 
 function getFormData() {
     const slope = Number(slopeEl.value);
+    const exponent = Number(exponentEl.value);
     const forceMaxPowerMarginC = Number(forceMaxPowerMarginCEl.value);
     const minSupplyTempC = Number(minSupplyTempCEl.value);
     const maxSupplyTempC = Number(maxSupplyTempCEl.value);
     return {
         slope: Number.isFinite(slope) ? slope : 1.2,
+        exponent: Number.isFinite(exponent) ? exponent : 1.3,
         force_max_power_below_target: Boolean(forceMaxPowerBelowTargetEl.checked),
         force_max_power_margin_c: Number.isFinite(forceMaxPowerMarginC) ? forceMaxPowerMarginC : 5.0,
         min_supply_temp_c: Number.isFinite(minSupplyTempC) ? minSupplyTempC : 25.0,
@@ -25,6 +28,7 @@ function getFormData() {
 
 function applyFormData(data) {
     slopeEl.value = data.slope;
+    exponentEl.value = data.exponent;
     forceMaxPowerBelowTargetEl.checked = Boolean(data.force_max_power_below_target);
     forceMaxPowerMarginCEl.value = data.force_max_power_margin_c;
     minSupplyTempCEl.value = data.min_supply_temp_c;
@@ -33,7 +37,8 @@ function applyFormData(data) {
 }
 
 function computeCurvePoint(outdoorTempC, data) {
-    const unclamped = 24.6 + data.slope * (20 - outdoorTempC);
+    const delta = Math.max(0, 20 - outdoorTempC);
+    const unclamped = 20 + data.slope * (delta ** data.exponent);
     return Math.min(data.max_supply_temp_c, Math.max(data.min_supply_temp_c, unclamped));
 }
 
@@ -98,6 +103,7 @@ async function saveHeatingCurve() {
 }
 
 slopeEl.addEventListener("input", renderPreview);
+exponentEl.addEventListener("input", renderPreview);
 forceMaxPowerBelowTargetEl.addEventListener("change", renderPreview);
 forceMaxPowerMarginCEl.addEventListener("input", renderPreview);
 minSupplyTempCEl.addEventListener("input", renderPreview);

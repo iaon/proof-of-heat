@@ -69,6 +69,7 @@ CONFIG_MARKUP = load_template("config.html")
 STATIC_VERSION = _compute_static_version()
 HEATING_CURVE_DEFAULTS: Dict[str, Any] = {
     "slope": 1.2,
+    "exponent": 1.3,
     "force_max_power_below_target": True,
     "force_max_power_margin_c": 5.0,
     "min_supply_temp_c": 25.0,
@@ -272,6 +273,10 @@ def create_app(config: AppConfig = DEFAULT_CONFIG) -> FastAPI:
     def _normalize_heating_curve(value: Any) -> Dict[str, Any]:
         curve = value if isinstance(value, dict) else {}
         slope = _coerce_float(curve.get("slope"), HEATING_CURVE_DEFAULTS["slope"])
+        exponent = _coerce_float(
+            curve.get("exponent"),
+            HEATING_CURVE_DEFAULTS["exponent"],
+        )
         force_max_power_below_target = _coerce_bool(
             curve.get("force_max_power_below_target"),
             HEATING_CURVE_DEFAULTS["force_max_power_below_target"],
@@ -292,6 +297,7 @@ def create_app(config: AppConfig = DEFAULT_CONFIG) -> FastAPI:
             max_supply_temp_c = min_supply_temp_c
         return {
             "slope": slope,
+            "exponent": exponent,
             "force_max_power_below_target": force_max_power_below_target,
             "force_max_power_margin_c": force_max_power_margin_c,
             "min_supply_temp_c": min_supply_temp_c,
