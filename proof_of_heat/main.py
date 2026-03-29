@@ -361,19 +361,14 @@ def create_app(config: AppConfig = DEFAULT_CONFIG) -> FastAPI:
                     .row { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; }
                     label { font-weight: 600; }
                     select, input { padding: 6px 8px; border-radius: 4px; border: 1px solid #cbd5e1; }
-                    .metric-rows { display: flex; flex-direction: column; gap: 8px; min-width: 520px; }
-                    .metric-row { display: flex; flex-direction: column; gap: 6px; }
-                    .metric-row-head { display: flex; gap: 8px; align-items: flex-start; }
-                    .metric-picker { position: relative; flex: 1 1 auto; min-width: 0; }
-                    .metric-picker input {
-                        width: 100%;
-                        box-sizing: border-box;
-                    }
-                    .metric-remove {
-                        background: #dc2626;
-                        padding: 6px 10px;
-                        font-size: 12px;
-                    }
+                    .metric-rows { display: flex; flex-direction: column; gap: 12px; min-width: 520px; flex: 1 1 auto; }
+                    .metric-row { border: 1px solid #e2e8f0; border-radius: 8px; padding: 10px; background: #f8fafc; }
+                    .metric-row-head { display: flex; gap: 8px; align-items: flex-start; flex-wrap: wrap; }
+                    .metric-row-head label { font-size: 12px; color: #334155; }
+                    .metric-row-head select { min-width: 140px; }
+                    .metric-picker { position: relative; flex: 1 1 320px; min-width: 260px; }
+                    .metric-picker input { width: 100%; box-sizing: border-box; }
+                    .metric-remove { background: #dc2626; padding: 6px 10px; font-size: 12px; }
                     .metric-dropdown {
                         position: absolute;
                         top: calc(100% + 6px);
@@ -387,11 +382,7 @@ def create_app(config: AppConfig = DEFAULT_CONFIG) -> FastAPI:
                         box-shadow: 0 12px 28px rgba(15, 23, 42, 0.18);
                         z-index: 20;
                     }
-                    .metric-option {
-                        padding: 8px 10px;
-                        border-bottom: 1px solid #e2e8f0;
-                        cursor: pointer;
-                    }
+                    .metric-option { padding: 8px 10px; border-bottom: 1px solid #e2e8f0; cursor: pointer; }
                     .metric-option:last-child { border-bottom: none; }
                     .metric-option:hover { background: #f1f5f9; }
                     .metric-option.active { background: #dbeafe; }
@@ -401,40 +392,27 @@ def create_app(config: AppConfig = DEFAULT_CONFIG) -> FastAPI:
                         color: #0f172a;
                         word-break: break-all;
                     }
-                    .metric-option .metric-human-name {
-                        font-size: 12px;
-                        color: #475569;
-                        margin-top: 2px;
-                    }
-                    .metric-empty {
-                        padding: 10px;
-                        color: #64748b;
-                        font-size: 13px;
-                    }
-                    .metric-meta { margin-top: 2px; font-size: 13px; color: #334155; }
+                    .metric-option .metric-human-name { font-size: 12px; color: #475569; margin-top: 2px; }
+                    .metric-empty { padding: 10px; color: #64748b; font-size: 13px; }
+                    .metric-meta { margin-top: 8px; font-size: 13px; color: #334155; }
                     .metric-meta code { background: #e2e8f0; color: #0f172a; padding: 2px 6px; border-radius: 4px; }
                     button { cursor: pointer; padding: 8px 12px; border: none; background: #2563eb; color: white; border-radius: 4px; }
                     .muted { color: #64748b; }
                     canvas { max-width: 100%; }
                     @media (max-width: 900px) {
                         .metric-rows { min-width: 260px; width: 100%; }
+                        .metric-row-head select, .metric-picker { width: 100%; }
                     }
                 </style>
                 <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
             </head>
             <body>
                 <h1>Metrics chart</h1>
-                <p class="muted">Select a device + metric to plot history over time.</p>
+                <p class="muted">Select one or more series (device type + device id + metric) to plot history.</p>
 
                 <div class="card">
                     <div class="row" style="margin-bottom:12px;">
-                        <label for="device-type">Device type</label>
-                        <select id="device-type"></select>
-
-                        <label for="device-id">Device id</label>
-                        <select id="device-id"></select>
-
-                        <label for="metric-search-1">Metrics</label>
+                        <label for="metric-rows">Series</label>
                         <div class="metric-rows" id="metric-rows"></div>
                         <button id="add-metric" type="button" title="Add metric">+</button>
                     </div>
@@ -461,8 +439,6 @@ def create_app(config: AppConfig = DEFAULT_CONFIG) -> FastAPI:
                 <script>
                     const rootPath = __ROOT_PATH_JSON__;
                     const apiUrl = (path) => `${rootPath}${path}`;
-                    const deviceTypeEl = document.getElementById('device-type');
-                    const deviceIdEl = document.getElementById('device-id');
                     const metricRowsEl = document.getElementById('metric-rows');
                     const addMetricBtn = document.getElementById('add-metric');
                     const startDateEl = document.getElementById('start-date');
@@ -476,19 +452,11 @@ def create_app(config: AppConfig = DEFAULT_CONFIG) -> FastAPI:
                     const emptyEl = document.getElementById('empty');
                     const ctx = document.getElementById('chart').getContext('2d');
                     let chart;
-                    let availableMetrics = [];
                     let metricRowSeq = 0;
+                    let deviceTypes = [];
                     const metricRows = [];
-                    const palette = [
-                        '#2563eb',
-                        '#dc2626',
-                        '#16a34a',
-                        '#7c3aed',
-                        '#ea580c',
-                        '#0891b2',
-                        '#db2777',
-                        '#0f766e',
-                    ];
+                    const STORAGE_KEY = 'proof_of_heat_metrics_view_v1';
+                    const palette = ['#2563eb','#dc2626','#16a34a','#7c3aed','#ea580c','#0891b2','#db2777','#0f766e'];
 
                     function setOptions(select, options) {
                         select.innerHTML = '';
@@ -511,32 +479,22 @@ def create_app(config: AppConfig = DEFAULT_CONFIG) -> FastAPI:
 
                     function toTimeParts(date) {
                         const pad = (num) => String(num).padStart(2, '0');
-                        return {
-                            hour: pad(date.getHours()),
-                            minute: pad(date.getMinutes()),
-                            second: pad(date.getSeconds()),
-                        };
+                        return { hour: pad(date.getHours()), minute: pad(date.getMinutes()), second: pad(date.getSeconds()) };
                     }
 
                     function parseDateTimeInput(dateValue, hourValue, minuteValue, secondValue) {
-                        if (!dateValue) {
-                            return null;
-                        }
+                        if (!dateValue) return null;
                         const [year, month, day] = dateValue.split('-').map(Number);
                         const hour = Number(hourValue);
                         const minute = Number(minuteValue);
                         const second = Number(secondValue);
-                        if ([year, month, day, hour, minute, second].some((item) => Number.isNaN(item))) {
-                            return null;
-                        }
+                        if ([year, month, day, hour, minute, second].some((item) => Number.isNaN(item))) return null;
                         return new Date(year, month - 1, day, hour, minute, second, 0);
                     }
 
                     function toIsoWithOffset(dateValue, hourValue, minuteValue, secondValue) {
                         const date = parseDateTimeInput(dateValue, hourValue, minuteValue, secondValue);
-                        if (!date) {
-                            return '';
-                        }
+                        if (!date) return '';
                         const pad = (num) => String(num).padStart(2, '0');
                         const tzOffset = -date.getTimezoneOffset();
                         const sign = tzOffset >= 0 ? '+' : '-';
@@ -547,13 +505,8 @@ def create_app(config: AppConfig = DEFAULT_CONFIG) -> FastAPI:
 
                     function formatDateTime(value) {
                         return new Intl.DateTimeFormat('ru-RU', {
-                            year: 'numeric',
-                            month: '2-digit',
-                            day: '2-digit',
-                            hour: '2-digit',
-                            minute: '2-digit',
-                            second: '2-digit',
-                            hour12: false,
+                            year: 'numeric', month: '2-digit', day: '2-digit',
+                            hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false,
                         }).format(new Date(value));
                     }
 
@@ -562,61 +515,80 @@ def create_app(config: AppConfig = DEFAULT_CONFIG) -> FastAPI:
                         return date ? date.getTime() : null;
                     }
 
+                    function persistState() {
+                        const payload = {
+                            start: {
+                                date: startDateEl.value || '',
+                                hour: startHourEl.value || '',
+                                minute: startMinuteEl.value || '',
+                                second: startSecondEl.value || '',
+                            },
+                            end: {
+                                date: endDateEl.value || '',
+                                hour: endHourEl.value || '',
+                                minute: endMinuteEl.value || '',
+                                second: endSecondEl.value || '',
+                            },
+                            series: metricRows.map((row) => ({
+                                device_type: row.deviceTypeEl.value || '',
+                                device_id: row.deviceIdEl.value || '',
+                                metric: row.metricValueEl.value || '',
+                            })),
+                        };
+                        try {
+                            localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
+                        } catch (err) {
+                            // Ignore storage failures (private mode/quota).
+                        }
+                    }
+
+                    function loadState() {
+                        try {
+                            const raw = localStorage.getItem(STORAGE_KEY);
+                            if (!raw) return null;
+                            const parsed = JSON.parse(raw);
+                            if (!parsed || typeof parsed !== 'object') return null;
+                            return parsed;
+                        } catch (err) {
+                            return null;
+                        }
+                    }
+
                     function prettifyMetricName(name) {
                         return name.replaceAll('_', ' ');
                     }
 
                     function describeZontMetric(metricName) {
                         let match = metricName.match(/^io_thermometers_state_([a-zA-Z0-9]+)_last_value$/);
-                        if (match) {
-                            const sensorId = match[1];
-                            return `Thermometer ${sensorId.slice(0, 8)}: temperature`;
-                        }
+                        if (match) return `Thermometer ${match[1].slice(0, 8)}: temperature`;
                         match = metricName.match(/^io_thermometers_state_([a-zA-Z0-9]+)_last_value_time$/);
-                        if (match) {
-                            const sensorId = match[1];
-                            return `Thermometer ${sensorId.slice(0, 8)}: last value time (epoch seconds)`;
-                        }
+                        if (match) return `Thermometer ${match[1].slice(0, 8)}: last value time (epoch seconds)`;
                         match = metricName.match(/^io_last_boiler_state_(.+)$/);
-                        if (match) {
-                            return `Boiler state: ${prettifyMetricName(match[1])}`;
-                        }
-                        if (metricName.startsWith('io_')) {
-                            return `I/O metric: ${prettifyMetricName(metricName.slice(3))}`;
-                        }
+                        if (match) return `Boiler state: ${prettifyMetricName(match[1])}`;
+                        if (metricName.startsWith('io_')) return `I/O metric: ${prettifyMetricName(metricName.slice(3))}`;
                         return `ZONT metric: ${prettifyMetricName(metricName)}`;
                     }
 
                     function describeMetric(deviceType, metricName) {
-                        if (!metricName) {
-                            return '—';
-                        }
-                        if (deviceType === 'zont') {
-                            return describeZontMetric(metricName);
-                        }
+                        if (!metricName) return '—';
+                        if (deviceType === 'zont') return describeZontMetric(metricName);
                         return prettifyMetricName(metricName);
                     }
 
                     function updateRemoveButtons() {
-                        metricRows.forEach((row) => {
-                            row.removeBtn.hidden = metricRows.length <= 1;
-                        });
+                        metricRows.forEach((row) => { row.removeBtn.hidden = metricRows.length <= 1; });
                     }
 
                     function closeAllMetricDropdowns(exceptRowId = null) {
                         metricRows.forEach((row) => {
-                            if (row.id !== exceptRowId) {
-                                row.dropdownEl.hidden = true;
-                            }
+                            if (row.id !== exceptRowId) row.dropdownEl.hidden = true;
                         });
                     }
 
                     function renderRowDropdown(row, filterValue = '') {
                         const query = filterValue.trim().toLowerCase();
                         const filtered = row.options.filter((item) => {
-                            if (!query) {
-                                return true;
-                            }
+                            if (!query) return true;
                             return item.value.toLowerCase().includes(query) || item.human.toLowerCase().includes(query);
                         });
                         if (!filtered.length) {
@@ -624,7 +596,7 @@ def create_app(config: AppConfig = DEFAULT_CONFIG) -> FastAPI:
                             return;
                         }
                         row.dropdownEl.innerHTML = filtered.map((item) => {
-                            const activeClass = item.value === row.hiddenEl.value ? ' active' : '';
+                            const activeClass = item.value === row.metricValueEl.value ? ' active' : '';
                             return `<div class="metric-option${activeClass}" data-value="${item.value}">
                                         <div class="metric-db-name">${item.value}</div>
                                         <div class="metric-human-name">${item.human}</div>
@@ -632,67 +604,104 @@ def create_app(config: AppConfig = DEFAULT_CONFIG) -> FastAPI:
                         }).join('');
                     }
 
-                    function buildMetricOptions() {
-                        return (availableMetrics || []).map((value) => ({
-                            value,
-                            human: describeMetric(deviceTypeEl.value, value),
-                        }));
-                    }
-
                     function updateRowInfo(row) {
-                        const metricName = row.hiddenEl.value || '';
+                        const metricName = row.metricValueEl.value || '';
                         row.fullNameEl.textContent = metricName || '—';
-                        row.humanEl.textContent = describeMetric(deviceTypeEl.value, metricName);
+                        row.humanEl.textContent = describeMetric(row.deviceTypeEl.value, metricName);
                     }
 
                     function selectMetricForRow(row, value) {
                         const selected = row.options.find((item) => item.value === value);
                         if (!selected) {
-                            row.hiddenEl.value = '';
+                            row.metricValueEl.value = '';
                             row.searchEl.value = '';
                             updateRowInfo(row);
                             return;
                         }
-                        row.hiddenEl.value = selected.value;
+                        row.metricValueEl.value = selected.value;
                         row.searchEl.value = selected.value;
                         updateRowInfo(row);
                         renderRowDropdown(row, row.searchEl.value);
                     }
 
-                    function applyMetricsToRows() {
+                    async function loadDeviceTypes() {
+                        const res = await fetch(apiUrl('/api/metrics/device-types'));
+                        const data = await res.json();
+                        deviceTypes = data.device_types || [];
                         metricRows.forEach((row) => {
-                            const previousValue = row.hiddenEl.value;
-                            row.options = buildMetricOptions();
-                            if (previousValue && row.options.some((item) => item.value === previousValue)) {
-                                selectMetricForRow(row, previousValue);
-                            } else {
-                                row.hiddenEl.value = '';
-                                row.searchEl.value = '';
-                                updateRowInfo(row);
-                            }
-                            renderRowDropdown(row, row.searchEl.value);
+                            const prevType = row.deviceTypeEl.value;
+                            setOptions(row.deviceTypeEl, deviceTypes);
+                            if (prevType && deviceTypes.includes(prevType)) row.deviceTypeEl.value = prevType;
                         });
                     }
 
-                    function collectSelectedMetrics() {
-                        return metricRows
-                            .map((row) => ({
-                                metric: row.hiddenEl.value,
-                                label: row.searchEl.value || row.hiddenEl.value,
-                            }))
-                            .filter((item) => Boolean(item.metric));
+                    async function loadDeviceIdsForRow(row) {
+                        const type = row.deviceTypeEl.value;
+                        if (!type) {
+                            setOptions(row.deviceIdEl, []);
+                            return;
+                        }
+                        const res = await fetch(apiUrl(`/api/metrics/device-ids?device_type=${encodeURIComponent(type)}`));
+                        const data = await res.json();
+                        const prevId = row.deviceIdEl.value;
+                        const ids = data.device_ids || [];
+                        setOptions(row.deviceIdEl, ids);
+                        if (prevId && ids.includes(prevId)) row.deviceIdEl.value = prevId;
                     }
 
-                    function createMetricRow() {
+                    async function loadMetricsForRow(row) {
+                        const type = row.deviceTypeEl.value;
+                        const id = row.deviceIdEl.value;
+                        if (!type || !id) {
+                            row.options = [];
+                            row.metricValueEl.value = '';
+                            row.searchEl.value = '';
+                            renderRowDropdown(row, '');
+                            updateRowInfo(row);
+                            return;
+                        }
+                        const res = await fetch(apiUrl(`/api/metrics/metric-names?device_type=${encodeURIComponent(type)}&device_id=${encodeURIComponent(id)}`));
+                        const data = await res.json();
+                        const prevMetric = row.metricValueEl.value;
+                        row.options = (data.metrics || []).map((value) => ({
+                            value,
+                            human: describeMetric(type, value),
+                        }));
+                        if (prevMetric && row.options.some((item) => item.value === prevMetric)) {
+                            selectMetricForRow(row, prevMetric);
+                        } else {
+                            row.metricValueEl.value = '';
+                            row.searchEl.value = '';
+                            updateRowInfo(row);
+                        }
+                        renderRowDropdown(row, row.searchEl.value);
+                    }
+
+                    function collectSelectedSeries() {
+                        return metricRows
+                            .map((row) => ({
+                                deviceType: row.deviceTypeEl.value,
+                                deviceId: row.deviceIdEl.value,
+                                metric: row.metricValueEl.value,
+                                label: row.searchEl.value || row.metricValueEl.value,
+                            }))
+                            .filter((item) => Boolean(item.deviceType && item.deviceId && item.metric));
+                    }
+
+                    function createMetricRow(initialState = null) {
                         metricRowSeq += 1;
                         const rowId = metricRowSeq;
                         const rowEl = document.createElement('div');
                         rowEl.className = 'metric-row';
                         rowEl.innerHTML = `
                             <div class="metric-row-head">
+                                <label for="device-type-${rowId}">Device type</label>
+                                <select id="device-type-${rowId}"></select>
+                                <label for="device-id-${rowId}">Device id</label>
+                                <select id="device-id-${rowId}"></select>
                                 <div class="metric-picker">
                                     <input id="metric-search-${rowId}" type="text" autocomplete="off" placeholder="Select or search metric..." />
-                                    <input id="metric-${rowId}" type="hidden" />
+                                    <input id="metric-value-${rowId}" type="hidden" />
                                     <div id="metric-dropdown-${rowId}" class="metric-dropdown" hidden></div>
                                 </div>
                                 <button id="metric-remove-${rowId}" type="button" class="metric-remove">−</button>
@@ -707,96 +716,76 @@ def create_app(config: AppConfig = DEFAULT_CONFIG) -> FastAPI:
                         const row = {
                             id: rowId,
                             rowEl,
+                            deviceTypeEl: rowEl.querySelector(`#device-type-${rowId}`),
+                            deviceIdEl: rowEl.querySelector(`#device-id-${rowId}`),
                             searchEl: rowEl.querySelector(`#metric-search-${rowId}`),
-                            hiddenEl: rowEl.querySelector(`#metric-${rowId}`),
+                            metricValueEl: rowEl.querySelector(`#metric-value-${rowId}`),
                             dropdownEl: rowEl.querySelector(`#metric-dropdown-${rowId}`),
                             removeBtn: rowEl.querySelector(`#metric-remove-${rowId}`),
                             fullNameEl: rowEl.querySelector(`#metric-full-name-${rowId}`),
                             humanEl: rowEl.querySelector(`#metric-human-${rowId}`),
-                            options: buildMetricOptions(),
+                            options: [],
                         };
                         metricRows.push(row);
+                        setOptions(row.deviceTypeEl, deviceTypes);
+                        setOptions(row.deviceIdEl, []);
+                        row.initialState = initialState;
 
+                        row.deviceTypeEl.addEventListener('change', async () => {
+                            await loadDeviceIdsForRow(row);
+                            await loadMetricsForRow(row);
+                            persistState();
+                            loadChart();
+                        });
+                        row.deviceIdEl.addEventListener('change', async () => {
+                            await loadMetricsForRow(row);
+                            persistState();
+                            loadChart();
+                        });
                         row.searchEl.addEventListener('focus', () => {
                             closeAllMetricDropdowns(row.id);
                             renderRowDropdown(row, row.searchEl.value);
                             row.dropdownEl.hidden = false;
                         });
                         row.searchEl.addEventListener('input', () => {
-                            row.hiddenEl.value = '';
+                            row.metricValueEl.value = '';
                             updateRowInfo(row);
                             closeAllMetricDropdowns(row.id);
                             renderRowDropdown(row, row.searchEl.value);
                             row.dropdownEl.hidden = false;
+                            persistState();
                             loadChart();
                         });
                         row.dropdownEl.addEventListener('click', (event) => {
                             const option = event.target.closest('.metric-option');
-                            if (!option) {
-                                return;
-                            }
-                            const value = option.getAttribute('data-value') || '';
-                            selectMetricForRow(row, value);
+                            if (!option) return;
+                            selectMetricForRow(row, option.getAttribute('data-value') || '');
                             row.dropdownEl.hidden = true;
+                            persistState();
                             loadChart();
                         });
                         row.removeBtn.addEventListener('click', () => {
-                            if (metricRows.length <= 1) {
-                                return;
-                            }
+                            if (metricRows.length <= 1) return;
                             const idx = metricRows.findIndex((item) => item.id === row.id);
                             if (idx >= 0) {
                                 metricRows.splice(idx, 1);
                                 row.rowEl.remove();
                                 updateRemoveButtons();
+                                persistState();
                                 loadChart();
                             }
                         });
 
-                        renderRowDropdown(row, '');
                         updateRowInfo(row);
+                        renderRowDropdown(row, '');
                         updateRemoveButtons();
                         return row;
                     }
 
-                    async function loadDeviceTypes() {
-                        const res = await fetch(apiUrl('/api/metrics/device-types'));
-                        const data = await res.json();
-                        setOptions(deviceTypeEl, data.device_types || []);
-                    }
-
-                    async function loadDeviceIds() {
-                        const type = deviceTypeEl.value;
-                        if (!type) {
-                            setOptions(deviceIdEl, []);
-                            return;
-                        }
-                        const res = await fetch(apiUrl(`/api/metrics/device-ids?device_type=${encodeURIComponent(type)}`));
-                        const data = await res.json();
-                        setOptions(deviceIdEl, data.device_ids || []);
-                    }
-
-                    async function loadMetrics() {
-                        const type = deviceTypeEl.value;
-                        const id = deviceIdEl.value;
-                        if (!type || !id) {
-                            availableMetrics = [];
-                            applyMetricsToRows();
-                            return;
-                        }
-                        const res = await fetch(apiUrl(`/api/metrics/metric-names?device_type=${encodeURIComponent(type)}&device_id=${encodeURIComponent(id)}`));
-                        const data = await res.json();
-                        availableMetrics = data.metrics || [];
-                        applyMetricsToRows();
-                    }
-
                     async function loadChart() {
-                        const type = deviceTypeEl.value;
-                        const id = deviceIdEl.value;
-                        const selectedMetrics = collectSelectedMetrics();
-                        if (!type || !id || !selectedMetrics.length) {
-                            return;
-                        }
+                        const selectedSeries = collectSelectedSeries();
+                        if (!selectedSeries.length) return;
+
                         const startDate = startDateEl.value;
                         const startHour = startHourEl.value;
                         const startMinute = startMinuteEl.value;
@@ -807,31 +796,25 @@ def create_app(config: AppConfig = DEFAULT_CONFIG) -> FastAPI:
                         const endSecond = endSecondEl.value;
                         const startMs = parseLocalInputToMs(startDate, startHour, startMinute, startSecond);
                         const endMs = parseLocalInputToMs(endDate, endHour, endMinute, endSecond);
-                        const requests = selectedMetrics.map(async (selectedMetric) => {
+
+                        const requests = selectedSeries.map(async (seriesItem) => {
                             const params = new URLSearchParams({
-                                device_type: type,
-                                device_id: id,
-                                metric: selectedMetric.metric,
+                                device_type: seriesItem.deviceType,
+                                device_id: seriesItem.deviceId,
+                                metric: seriesItem.metric,
                             });
-                            if (startDate) {
-                                params.set('start', toIsoWithOffset(startDate, startHour, startMinute, startSecond));
-                            }
-                            if (endDate) {
-                                params.set('end', toIsoWithOffset(endDate, endHour, endMinute, endSecond));
-                            }
+                            if (startDate) params.set('start', toIsoWithOffset(startDate, startHour, startMinute, startSecond));
+                            if (endDate) params.set('end', toIsoWithOffset(endDate, endHour, endMinute, endSecond));
                             const res = await fetch(apiUrl(`/api/metrics/data?${params.toString()}`));
                             const data = await res.json();
                             return {
-                                metric: selectedMetric.metric,
-                                label: selectedMetric.label,
+                                label: `${seriesItem.deviceType} ${seriesItem.deviceId} · ${seriesItem.label}`,
                                 points: data.points || [],
                             };
                         });
                         const metricSeries = await Promise.all(requests);
 
-                        if (chart) {
-                            chart.destroy();
-                        }
+                        if (chart) chart.destroy();
                         const datasets = metricSeries.map((seriesData, index) => {
                             const gapMs = 10 * 60 * 1000;
                             const series = [];
@@ -839,15 +822,13 @@ def create_app(config: AppConfig = DEFAULT_CONFIG) -> FastAPI:
                                 const ts = point.ts;
                                 if (pointIndex > 0) {
                                     const prevTs = seriesData.points[pointIndex - 1].ts;
-                                    if (ts - prevTs > gapMs) {
-                                        series.push({ x: prevTs + gapMs, y: null });
-                                    }
+                                    if (ts - prevTs > gapMs) series.push({ x: prevTs + gapMs, y: null });
                                 }
                                 series.push({ x: ts, y: point.value });
                             });
                             const color = palette[index % palette.length];
                             return {
-                                label: `${type} ${id} · ${seriesData.label}`,
+                                label: seriesData.label,
                                 data: series,
                                 borderColor: color,
                                 backgroundColor: `${color}22`,
@@ -856,17 +837,12 @@ def create_app(config: AppConfig = DEFAULT_CONFIG) -> FastAPI:
                                 spanGaps: false,
                             };
                         });
+
                         const hasPoints = metricSeries.some((seriesData) => seriesData.points.length > 0);
-                        if (!hasPoints) {
-                            emptyEl.textContent = 'No data for the selected range.';
-                        } else {
-                            emptyEl.textContent = '';
-                        }
+                        emptyEl.textContent = hasPoints ? '' : 'No data for the selected range.';
                         chart = new Chart(ctx, {
                             type: 'line',
-                            data: {
-                                datasets,
-                            },
+                            data: { datasets },
                             options: {
                                 responsive: true,
                                 scales: {
@@ -874,21 +850,14 @@ def create_app(config: AppConfig = DEFAULT_CONFIG) -> FastAPI:
                                         type: 'linear',
                                         min: startMs ?? undefined,
                                         max: endMs ?? undefined,
-                                        ticks: {
-                                            callback: (value) => formatDateTime(value),
-                                        },
+                                        ticks: { callback: (value) => formatDateTime(value) },
                                     },
                                     y: { beginAtZero: false },
                                 },
                                 plugins: {
                                     tooltip: {
                                         callbacks: {
-                                            title: (items) => {
-                                                if (!items.length) {
-                                                    return '';
-                                                }
-                                                return formatDateTime(items[0].parsed.x);
-                                            },
+                                            title: (items) => items.length ? formatDateTime(items[0].parsed.x) : '',
                                         },
                                     },
                                 },
@@ -896,42 +865,77 @@ def create_app(config: AppConfig = DEFAULT_CONFIG) -> FastAPI:
                         });
                     }
 
-                    deviceTypeEl.addEventListener('change', async () => {
-                        await loadDeviceIds();
-                        await loadMetrics();
-                        loadChart();
-                    });
-                    deviceIdEl.addEventListener('change', async () => {
-                        await loadMetrics();
-                        loadChart();
-                    });
                     document.addEventListener('click', (event) => {
-                        const clickedInsideAnyPicker = metricRows.some((row) => row.rowEl.contains(event.target));
-                        if (!clickedInsideAnyPicker) {
-                            closeAllMetricDropdowns();
-                        }
+                        const clickedInsideAnyRow = metricRows.some((row) => row.rowEl.contains(event.target));
+                        if (!clickedInsideAnyRow) closeAllMetricDropdowns();
                     });
                     addMetricBtn.addEventListener('click', () => {
                         createMetricRow();
-                        applyMetricsToRows();
+                        persistState();
                     });
-                    document.getElementById('apply').addEventListener('click', loadChart);
+                    document.getElementById('apply').addEventListener('click', () => {
+                        persistState();
+                        loadChart();
+                    });
 
-                    const now = new Date();
-                    const yesterday = new Date(now.getTime() - 24 * 60 * 60 * 1000);
-                    startDateEl.value = toDateInputValue(yesterday);
-                    endDateEl.value = toDateInputValue(now);
-                    const startParts = toTimeParts(yesterday);
-                    const endParts = toTimeParts(now);
-                    startHourEl.value = startParts.hour;
-                    startMinuteEl.value = startParts.minute;
-                    startSecondEl.value = startParts.second;
-                    endHourEl.value = endParts.hour;
-                    endMinuteEl.value = endParts.minute;
-                    endSecondEl.value = endParts.second;
+                    const savedState = loadState();
+                    if (savedState && savedState.start) {
+                        startDateEl.value = savedState.start.date || '';
+                        startHourEl.value = savedState.start.hour || '';
+                        startMinuteEl.value = savedState.start.minute || '';
+                        startSecondEl.value = savedState.start.second || '';
+                    }
+                    if (savedState && savedState.end) {
+                        endDateEl.value = savedState.end.date || '';
+                        endHourEl.value = savedState.end.hour || '';
+                        endMinuteEl.value = savedState.end.minute || '';
+                        endSecondEl.value = savedState.end.second || '';
+                    }
+                    if (!startDateEl.value || !endDateEl.value) {
+                        const now = new Date();
+                        const yesterday = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+                        startDateEl.value = toDateInputValue(yesterday);
+                        endDateEl.value = toDateInputValue(now);
+                        const startParts = toTimeParts(yesterday);
+                        const endParts = toTimeParts(now);
+                        startHourEl.value = startHourEl.value || startParts.hour;
+                        startMinuteEl.value = startMinuteEl.value || startParts.minute;
+                        startSecondEl.value = startSecondEl.value || startParts.second;
+                        endHourEl.value = endHourEl.value || endParts.hour;
+                        endMinuteEl.value = endMinuteEl.value || endParts.minute;
+                        endSecondEl.value = endSecondEl.value || endParts.second;
+                    }
 
-                    createMetricRow();
-                    loadDeviceTypes();
+                    const initialSeries = Array.isArray(savedState && savedState.series) && savedState.series.length
+                        ? savedState.series
+                        : [{}];
+                    initialSeries.forEach((series) => createMetricRow(series));
+
+                    async function restoreRowsFromState() {
+                        for (const row of metricRows) {
+                            const initial = row.initialState || {};
+                            if (initial.device_type && deviceTypes.includes(initial.device_type)) {
+                                row.deviceTypeEl.value = initial.device_type;
+                                await loadDeviceIdsForRow(row);
+                            }
+                            if (initial.device_id) {
+                                const idOptions = Array.from(row.deviceIdEl.options).map((opt) => opt.value);
+                                if (idOptions.includes(initial.device_id)) {
+                                    row.deviceIdEl.value = initial.device_id;
+                                }
+                            }
+                            await loadMetricsForRow(row);
+                            if (initial.metric) {
+                                selectMetricForRow(row, initial.metric);
+                            }
+                        }
+                    }
+
+                    loadDeviceTypes().then(async () => {
+                        await restoreRowsFromState();
+                        persistState();
+                        loadChart();
+                    });
                 </script>
             </body>
             </html>
