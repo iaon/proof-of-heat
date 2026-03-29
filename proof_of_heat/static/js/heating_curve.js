@@ -33,7 +33,7 @@ function applyFormData(data) {
 }
 
 function computeCurvePoint(outdoorTempC, data) {
-    const unclamped = data.min_supply_temp_c + (20 - outdoorTempC) * data.slope;
+    const unclamped = 24.6 + data.slope * (20 - outdoorTempC);
     return Math.min(data.max_supply_temp_c, Math.max(data.min_supply_temp_c, unclamped));
 }
 
@@ -69,6 +69,7 @@ function renderPreview() {
             scales: {
                 x: {
                     type: "linear",
+                    reverse: true,
                     title: { display: true, text: "Outdoor temperature °C" },
                 },
                 y: {

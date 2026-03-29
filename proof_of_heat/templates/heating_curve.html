@@ -41,7 +41,7 @@
 
     <div class="card">
         <strong>Preview</strong>
-        <p class="muted">Preview assumes 20°C indoor setpoint and shows calculated supply temperature versus outdoor temperature.</p>
+        <p class="muted">Preview assumes 20°C indoor setpoint, uses the classic weather-compensated formula <code>24.6 + slope * (20 - outdoor)</code>, and shows outdoor temperature on the reversed axis: warmer values on the left, colder values on the right.</p>
         <canvas id="heating-curve-chart" height="120"></canvas>
     </div>
 
