@@ -361,14 +361,55 @@ def create_app(config: AppConfig = DEFAULT_CONFIG) -> FastAPI:
                     .row { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; }
                     label { font-weight: 600; }
                     select, input { padding: 6px 8px; border-radius: 4px; border: 1px solid #cbd5e1; }
-                    #metric { min-width: 520px; }
+                    .metric-picker { position: relative; min-width: 520px; }
+                    .metric-picker input {
+                        width: 100%;
+                        box-sizing: border-box;
+                    }
+                    .metric-dropdown {
+                        position: absolute;
+                        top: calc(100% + 6px);
+                        left: 0;
+                        right: 0;
+                        max-height: 320px;
+                        overflow-y: auto;
+                        background: #fff;
+                        border: 1px solid #cbd5e1;
+                        border-radius: 8px;
+                        box-shadow: 0 12px 28px rgba(15, 23, 42, 0.18);
+                        z-index: 20;
+                    }
+                    .metric-option {
+                        padding: 8px 10px;
+                        border-bottom: 1px solid #e2e8f0;
+                        cursor: pointer;
+                    }
+                    .metric-option:last-child { border-bottom: none; }
+                    .metric-option:hover { background: #f1f5f9; }
+                    .metric-option.active { background: #dbeafe; }
+                    .metric-option .metric-db-name {
+                        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+                        font-size: 12px;
+                        color: #0f172a;
+                        word-break: break-all;
+                    }
+                    .metric-option .metric-human-name {
+                        font-size: 12px;
+                        color: #475569;
+                        margin-top: 2px;
+                    }
+                    .metric-empty {
+                        padding: 10px;
+                        color: #64748b;
+                        font-size: 13px;
+                    }
                     .metric-meta { margin-top: 10px; font-size: 14px; color: #334155; }
                     .metric-meta code { background: #e2e8f0; color: #0f172a; padding: 2px 6px; border-radius: 4px; }
                     button { cursor: pointer; padding: 8px 12px; border: none; background: #2563eb; color: white; border-radius: 4px; }
                     .muted { color: #64748b; }
                     canvas { max-width: 100%; }
                     @media (max-width: 900px) {
-                        #metric { min-width: 260px; width: 100%; }
+                        .metric-picker { min-width: 260px; width: 100%; }
                     }
                 </style>
                 <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
@@ -386,7 +427,11 @@ def create_app(config: AppConfig = DEFAULT_CONFIG) -> FastAPI:
                         <select id="device-id"></select>
 
                         <label for="metric">Metric</label>
-                        <select id="metric"></select>
+                        <div class="metric-picker" id="metric-picker">
+                            <input id="metric-search" type="text" autocomplete="off" placeholder="Select or search metric..." />
+                            <input id="metric" type="hidden" />
+                            <div id="metric-dropdown" class="metric-dropdown" hidden></div>
+                        </div>
                     </div>
                     <div class="metric-meta">
                         <div>Full DB metric name: <code id="metric-full-name">—</code></div>
@@ -418,6 +463,9 @@ def create_app(config: AppConfig = DEFAULT_CONFIG) -> FastAPI:
                     const deviceTypeEl = document.getElementById('device-type');
                     const deviceIdEl = document.getElementById('device-id');
                     const metricEl = document.getElementById('metric');
+                    const metricSearchEl = document.getElementById('metric-search');
+                    const metricPickerEl = document.getElementById('metric-picker');
+                    const metricDropdownEl = document.getElementById('metric-dropdown');
                     const metricFullNameEl = document.getElementById('metric-full-name');
                     const metricHumanEl = document.getElementById('metric-human');
                     const startDateEl = document.getElementById('start-date');
@@ -431,6 +479,7 @@ def create_app(config: AppConfig = DEFAULT_CONFIG) -> FastAPI:
                     const emptyEl = document.getElementById('empty');
                     const ctx = document.getElementById('chart').getContext('2d');
                     let chart;
+                    let metricOptions = [];
 
                     function setOptions(select, options) {
                         select.innerHTML = '';
@@ -539,6 +588,59 @@ def create_app(config: AppConfig = DEFAULT_CONFIG) -> FastAPI:
                         return prettifyMetricName(metricName);
                     }
 
+                    function closeMetricDropdown() {
+                        metricDropdownEl.hidden = true;
+                    }
+
+                    function openMetricDropdown() {
+                        metricDropdownEl.hidden = false;
+                    }
+
+                    function renderMetricDropdown(filterValue = '') {
+                        const query = filterValue.trim().toLowerCase();
+                        const filtered = metricOptions.filter((item) => {
+                            if (!query) {
+                                return true;
+                            }
+                            return item.value.toLowerCase().includes(query) || item.human.toLowerCase().includes(query);
+                        });
+                        if (!filtered.length) {
+                            metricDropdownEl.innerHTML = '<div class="metric-empty">No matching metrics</div>';
+                            return;
+                        }
+                        metricDropdownEl.innerHTML = filtered.map((item) => {
+                            const activeClass = item.value === metricEl.value ? ' active' : '';
+                            return `<div class="metric-option${activeClass}" data-value="${item.value}">
+                                        <div class="metric-db-name">${item.value}</div>
+                                        <div class="metric-human-name">${item.human}</div>
+                                    </div>`;
+                        }).join('');
+                    }
+
+                    function setMetricOptions(options) {
+                        metricOptions = (options || []).map((value) => ({
+                            value,
+                            human: describeMetric(deviceTypeEl.value, value),
+                        }));
+                        metricEl.value = '';
+                        metricSearchEl.value = '';
+                        renderMetricDropdown('');
+                    }
+
+                    function selectMetric(value) {
+                        const selected = metricOptions.find((item) => item.value === value);
+                        if (!selected) {
+                            metricEl.value = '';
+                            metricSearchEl.value = '';
+                            updateMetricInfo();
+                            return;
+                        }
+                        metricEl.value = selected.value;
+                        metricSearchEl.value = selected.value;
+                        updateMetricInfo();
+                        renderMetricDropdown(metricSearchEl.value);
+                    }
+
                     function updateMetricInfo() {
                         const metricName = metricEl.value || '';
                         metricFullNameEl.textContent = metricName || '—';
@@ -568,13 +670,13 @@ def create_app(config: AppConfig = DEFAULT_CONFIG) -> FastAPI:
                         const type = deviceTypeEl.value;
                         const id = deviceIdEl.value;
                         if (!type || !id) {
-                            setOptions(metricEl, []);
+                            setMetricOptions([]);
                             updateMetricInfo();
                             return;
                         }
                         const res = await fetch(apiUrl(`/api/metrics/metric-names?device_type=${encodeURIComponent(type)}&device_id=${encodeURIComponent(id)}`));
                         const data = await res.json();
-                        setOptions(metricEl, data.metrics || []);
+                        setMetricOptions(data.metrics || []);
                         updateMetricInfo();
                     }
 
@@ -634,7 +736,7 @@ def create_app(config: AppConfig = DEFAULT_CONFIG) -> FastAPI:
                             type: 'line',
                             data: {
                                 datasets: [{
-                                    label: `${type} ${id} · ${metric}`,
+                                    label: `${type} ${id} · ${metricSearchEl.value || metric}`,
                                     data: series,
                                     borderColor: '#2563eb',
                                     backgroundColor: 'rgba(37, 99, 235, 0.15)',
@@ -683,9 +785,30 @@ def create_app(config: AppConfig = DEFAULT_CONFIG) -> FastAPI:
                         updateMetricInfo();
                         loadChart();
                     });
-                    metricEl.addEventListener('change', () => {
+                    metricSearchEl.addEventListener('focus', () => {
+                        renderMetricDropdown(metricSearchEl.value);
+                        openMetricDropdown();
+                    });
+                    metricSearchEl.addEventListener('input', () => {
+                        metricEl.value = '';
                         updateMetricInfo();
+                        renderMetricDropdown(metricSearchEl.value);
+                        openMetricDropdown();
+                    });
+                    metricDropdownEl.addEventListener('click', (event) => {
+                        const option = event.target.closest('.metric-option');
+                        if (!option) {
+                            return;
+                        }
+                        const value = option.getAttribute('data-value') || '';
+                        selectMetric(value);
+                        closeMetricDropdown();
                         loadChart();
+                    });
+                    document.addEventListener('click', (event) => {
+                        if (!metricPickerEl.contains(event.target)) {
+                            closeMetricDropdown();
+                        }
                     });
                     document.getElementById('apply').addEventListener('click', loadChart);
 
