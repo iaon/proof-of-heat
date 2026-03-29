@@ -47,7 +47,6 @@ class DummyController:
 
 class DummyDevicePoller:
     latest_payloads = {}
-    metric_names = []
 
     def __init__(self, settings_data, data_dir=None):
         self.settings_data = settings_data
@@ -69,7 +68,7 @@ class DummyDevicePoller:
         return []
 
     def list_metric_names(self, device_type, device_id):
-        return list(self.metric_names)
+        return []
 
     def get_metric_series(self, device_type, device_id, metric, start_ms=None, end_ms=None):
         return []
@@ -78,16 +77,9 @@ class DummyDevicePoller:
         return self.latest_payloads.copy()
 
 
-def build_routes(
-    tmp_path,
-    monkeypatch,
-    parsed_settings=None,
-    latest_payloads=None,
-    metric_names=None,
-):
+def build_routes(tmp_path, monkeypatch, parsed_settings=None, latest_payloads=None):
     settings = parsed_settings or {"devices": {}}
     DummyDevicePoller.latest_payloads = latest_payloads or {}
-    DummyDevicePoller.metric_names = metric_names or []
     monkeypatch.setattr(main, "Whatsminer", DummyMiner, raising=False)
     monkeypatch.setattr(main, "TemperatureController", DummyController, raising=False)
     monkeypatch.setattr(main, "DevicePoller", DummyDevicePoller, raising=False)
@@ -229,25 +221,3 @@ def test_devices_view_lists_virtual_weather_devices(tmp_path, monkeypatch):
     body = resp.body.decode()
 
     assert "open_meteo 1001 (virtual)" in body
-
-
-def test_metric_names_include_human_readable_labels_for_zont(tmp_path, monkeypatch):
-    routes = build_routes(
-        tmp_path,
-        monkeypatch,
-        metric_names=[
-            "io_thermometers_state_600ff17fdcc0c856f06a7c3d_last_value",
-            "temp_out",
-        ],
-    )
-    payload = routes["/api/metrics/metric-names"](device_type="zont", device_id="12000")
-
-    assert payload["metrics"] == [
-        "io_thermometers_state_600ff17fdcc0c856f06a7c3d_last_value",
-        "temp_out",
-    ]
-    labels = {item["value"]: item["label"] for item in payload["metric_options"]}
-    assert labels["temp_out"] == "temp out"
-    assert labels["io_thermometers_state_600ff17fdcc0c856f06a7c3d_last_value"].startswith(
-        "Thermometer 600ff17f"
-    )

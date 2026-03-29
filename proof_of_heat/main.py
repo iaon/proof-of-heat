@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 import logging
 import os
-import re
 from datetime import datetime, timezone
 from html import escape
 from pathlib import Path
@@ -429,13 +428,8 @@ def create_app(config: AppConfig = DEFAULT_CONFIG) -> FastAPI:
                         select.appendChild(placeholder);
                         options.forEach((item) => {
                             const opt = document.createElement('option');
-                            if (typeof item === 'string') {
-                                opt.value = item;
-                                opt.textContent = item;
-                            } else {
-                                opt.value = item.value || '';
-                                opt.textContent = item.label || item.value || '';
-                            }
+                            opt.value = item;
+                            opt.textContent = item;
                             select.appendChild(opt);
                         });
                     }
@@ -524,14 +518,13 @@ def create_app(config: AppConfig = DEFAULT_CONFIG) -> FastAPI:
                         }
                         const res = await fetch(apiUrl(`/api/metrics/metric-names?device_type=${encodeURIComponent(type)}&device_id=${encodeURIComponent(id)}`));
                         const data = await res.json();
-                        setOptions(metricEl, data.metric_options || data.metrics || []);
+                        setOptions(metricEl, data.metrics || []);
                     }
 
                     async function loadChart() {
                         const type = deviceTypeEl.value;
                         const id = deviceIdEl.value;
                         const metric = metricEl.value;
-                        const metricLabel = metricEl.options[metricEl.selectedIndex]?.textContent || metric;
                         if (!type || !id || !metric) {
                             return;
                         }
@@ -584,7 +577,7 @@ def create_app(config: AppConfig = DEFAULT_CONFIG) -> FastAPI:
                             type: 'line',
                             data: {
                                 datasets: [{
-                                    label: `${type} ${id} · ${metricLabel}`,
+                                    label: `${type} ${id} · ${metric}`,
                                     data: series,
                                     borderColor: '#2563eb',
                                     backgroundColor: 'rgba(37, 99, 235, 0.15)',
@@ -695,41 +688,11 @@ def create_app(config: AppConfig = DEFAULT_CONFIG) -> FastAPI:
             raise HTTPException(status_code=400, detail="device_type is required")
         return {"device_ids": device_poller.list_metric_device_ids(device_type)}
 
-    def _format_metric_label(device_type: str, metric_name: str) -> str:
-        if device_type != "zont":
-            return metric_name
-        match = re.match(
-            r"^io_thermometers_state_([a-zA-Z0-9]+)_last_value$",
-            metric_name,
-        )
-        if match:
-            sensor_id = match.group(1)
-            return f"Thermometer {sensor_id[:8]} temperature"
-        match = re.match(
-            r"^io_thermometers_state_([a-zA-Z0-9]+)_last_value_time$",
-            metric_name,
-        )
-        if match:
-            sensor_id = match.group(1)
-            return f"Thermometer {sensor_id[:8]} time"
-        return metric_name.replace("_", " ")
-
     @app.get("/api/metrics/metric-names")
-    def list_metric_names(device_type: str, device_id: str) -> Dict[str, Any]:
+    def list_metric_names(device_type: str, device_id: str) -> Dict[str, list[str]]:
         if not device_type or not device_id:
             raise HTTPException(status_code=400, detail="device_type and device_id required")
-        metrics = device_poller.list_metric_names(device_type, device_id)
-        metric_options = [
-            {
-                "value": metric_name,
-                "label": _format_metric_label(device_type, metric_name),
-            }
-            for metric_name in metrics
-        ]
-        return {
-            "metrics": metrics,
-            "metric_options": metric_options,
-        }
+        return {"metrics": device_poller.list_metric_names(device_type, device_id)}
 
     @app.get("/api/metrics/data")
     def get_metric_data(
