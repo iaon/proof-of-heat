@@ -45,6 +45,13 @@ def load_template(name: str) -> str:
     return (TEMPLATES_DIR / name).read_text(encoding="utf-8")
 
 
+def render_template_text(template_name: str, replacements: Dict[str, str]) -> str:
+    markup = load_template(template_name)
+    for key, value in replacements.items():
+        markup = markup.replace(key, value)
+    return markup
+
+
 CONFIG_MARKUP = load_template("config.html")
 
 try:  # Lazy import to allow a diagnostic ASGI fallback if dependencies are missing
@@ -319,20 +326,27 @@ def create_app(config: AppConfig = DEFAULT_CONFIG) -> FastAPI:
                 payload = latest_payloads.get(f"{device_type}:{device['device_id']}", {})
                 cards.append((label, payload))
 
-        card_markup = ""
-        for label, payload in cards:
-            card_markup += (
-                "<div class=\"card\">"
-                f"<div class=\"row\"><strong>{escape(str(label))}</strong></div>"
-                f"<pre>{escape(json.dumps(payload, ensure_ascii=False, indent=2))}</pre>"
-                "</div>"
+        card_markup = "".join(
+            render_template_text(
+                "device_card.html",
+                {
+                    "__DEVICE_LABEL__": escape(str(label)),
+                    "__DEVICE_PAYLOAD__": escape(
+                        json.dumps(payload, ensure_ascii=False, indent=2)
+                    ),
+                },
             )
-
-        page_markup = load_template("devices.html").replace(
-            "__DEVICE_CARDS__",
-            card_markup or '<p class="muted">No devices configured.</p>',
+            for label, payload in cards
         )
-        page_markup = page_markup.replace("__ROOT_PATH__", escape(root_path, quote=True))
+
+        page_markup = render_template_text(
+            "devices.html",
+            {
+                "__ROOT_PATH__": escape(root_path, quote=True),
+                "__DEVICE_CARDS__": card_markup
+                or '<p class="muted">No devices configured.</p>',
+            },
+        )
         return HTMLResponse(page_markup)
 
     return app
