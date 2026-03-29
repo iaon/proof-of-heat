@@ -9,6 +9,7 @@ const endDateEl = document.getElementById("end-date");
 const endHourEl = document.getElementById("end-hour");
 const endMinuteEl = document.getElementById("end-minute");
 const endSecondEl = document.getElementById("end-second");
+const resetRangeBtn = document.getElementById("reset-range");
 const emptyEl = document.getElementById("empty");
 const ctx = document.getElementById("chart").getContext("2d");
 let chart;
@@ -80,20 +81,23 @@ function parseLocalInputToMs(dateValue, hourValue, minuteValue, secondValue) {
     return date ? date.getTime() : null;
 }
 
+function applyLast24HoursRange() {
+    const now = new Date();
+    const yesterday = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+    startDateEl.value = toDateInputValue(yesterday);
+    endDateEl.value = toDateInputValue(now);
+    const startParts = toTimeParts(yesterday);
+    const endParts = toTimeParts(now);
+    startHourEl.value = startParts.hour;
+    startMinuteEl.value = startParts.minute;
+    startSecondEl.value = startParts.second;
+    endHourEl.value = endParts.hour;
+    endMinuteEl.value = endParts.minute;
+    endSecondEl.value = endParts.second;
+}
+
 function persistState() {
     const payload = {
-        start: {
-            date: startDateEl.value || "",
-            hour: startHourEl.value || "",
-            minute: startMinuteEl.value || "",
-            second: startSecondEl.value || "",
-        },
-        end: {
-            date: endDateEl.value || "",
-            hour: endHourEl.value || "",
-            minute: endMinuteEl.value || "",
-            second: endSecondEl.value || "",
-        },
         series: metricRows.map((row) => ({
             device_type: row.deviceTypeEl.value || "",
             device_id: row.deviceIdEl.value || "",
@@ -444,34 +448,13 @@ document.getElementById("apply").addEventListener("click", () => {
     persistState();
     loadChart();
 });
+resetRangeBtn.addEventListener("click", () => {
+    applyLast24HoursRange();
+    loadChart();
+});
 
 const savedState = loadState();
-if (savedState && savedState.start) {
-    startDateEl.value = savedState.start.date || "";
-    startHourEl.value = savedState.start.hour || "";
-    startMinuteEl.value = savedState.start.minute || "";
-    startSecondEl.value = savedState.start.second || "";
-}
-if (savedState && savedState.end) {
-    endDateEl.value = savedState.end.date || "";
-    endHourEl.value = savedState.end.hour || "";
-    endMinuteEl.value = savedState.end.minute || "";
-    endSecondEl.value = savedState.end.second || "";
-}
-if (!startDateEl.value || !endDateEl.value) {
-    const now = new Date();
-    const yesterday = new Date(now.getTime() - 24 * 60 * 60 * 1000);
-    startDateEl.value = toDateInputValue(yesterday);
-    endDateEl.value = toDateInputValue(now);
-    const startParts = toTimeParts(yesterday);
-    const endParts = toTimeParts(now);
-    startHourEl.value = startHourEl.value || startParts.hour;
-    startMinuteEl.value = startMinuteEl.value || startParts.minute;
-    startSecondEl.value = startSecondEl.value || startParts.second;
-    endHourEl.value = endHourEl.value || endParts.hour;
-    endMinuteEl.value = endMinuteEl.value || endParts.minute;
-    endSecondEl.value = endSecondEl.value || endParts.second;
-}
+applyLast24HoursRange();
 
 const initialSeries = Array.isArray(savedState && savedState.series) && savedState.series.length
     ? savedState.series
