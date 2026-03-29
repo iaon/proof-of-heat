@@ -12,8 +12,9 @@
 - UI routes of note: `/ui`, `/config`, `/devices`, and `/metrics`.
 
 ## Build, Test, and Development Commands
-- `python -m venv .venv && source .venv/bin/activate` — create and activate the project virtualenv.
+- `python3 -m venv .venv && source .venv/bin/activate` — create and activate the project virtualenv.
 - `pip install -r requirements.txt` — install runtime dependencies into `.venv`.
+- `./scripts/bootstrap.sh` — create `.venv`, install dependencies, and create `conf/settings.yaml` from the example when missing.
 - `.venv/bin/python -m proof_of_heat.main` — run the API locally at `http://0.0.0.0:8000`.
 - `.venv/bin/python -m pytest -q` — run tests in the same environment as the app.
 - `docker compose up --build` — build and run the service with Docker Compose.

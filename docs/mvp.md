@@ -31,13 +31,19 @@ Ensure the container can reach your miner on the network (same L2/L3 or VPN).
 ## Quick start
 
 ```bash
-python -m venv .venv
+python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
-python -m proof_of_heat.main
+python3 -m proof_of_heat.main
 ```
 
 The service will start on `http://0.0.0.0:8000`.
+
+For a one-command local bootstrap you can also run:
+
+```bash
+./scripts/bootstrap.sh
+```
 
 Open the lightweight UI at `http://localhost:8000/ui` (or just `http://localhost:8000/`) for a simple control panel that can:
 
@@ -53,11 +59,11 @@ Install the dependencies (plus `pytest`) and run the tests from the repo root
 install):
 
 ```bash
-python -m venv .venv
+python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 pip install pytest
-PYTHONPATH=. pytest
+PYTHONPATH=. python3 -m pytest
 ```
 
 ## Endpoints

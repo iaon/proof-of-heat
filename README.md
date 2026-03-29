@@ -7,3 +7,9 @@
 Формат `conf/settings.yaml` и описание секций конфигурации: [docs/configuration.md](docs/configuration.md)
 
 Деплой через adnanh/webhook + nginx (секретный путь и IP-фильтрация): [docs/webhook-deploy.md](docs/webhook-deploy.md)
+
+Быстрая инициализация окружения:
+
+```bash
+./scripts/bootstrap.sh
+```
