@@ -39,6 +39,13 @@ class MetricSample:
     unit: str | None = None
 
 
+@dataclass(frozen=True)
+class ResolvedControlInput:
+    value: float | None
+    source: str | None = None
+    sources: list[str] | None = None
+
+
 class DevicePoller:
     def __init__(self, settings: dict[str, Any], data_dir: Path | None = None) -> None:
         self._settings = settings
@@ -219,6 +226,51 @@ class DevicePoller:
                 self._ensure_tables(conn)
                 rows = conn.execute(query, params).fetchall()
         return [{"ts": int(ts), "value": float(value)} for ts, value in rows]
+
+    def get_latest_control_inputs(self) -> dict[str, Any] | None:
+        if not self._db_path:
+            return None
+        with self._db_lock:
+            with sqlite3.connect(self._db_path) as conn:
+                self._ensure_tables(conn)
+                row = conn.execute(
+                    """
+                    SELECT
+                        ts,
+                        indoor_temp,
+                        indoor_temp_source,
+                        outdoor_temp,
+                        outdoor_temp_source,
+                        supply_temp,
+                        supply_temp_source,
+                        power,
+                        power_sources
+                    FROM control_inputs
+                    ORDER BY ts DESC, id DESC
+                    LIMIT 1
+                    """
+                ).fetchone()
+        if row is None:
+            return None
+        power_sources: list[str] = []
+        if row[8]:
+            try:
+                parsed = json.loads(row[8])
+                if isinstance(parsed, list):
+                    power_sources = [str(item) for item in parsed]
+            except (TypeError, ValueError, json.JSONDecodeError):
+                power_sources = []
+        return {
+            "ts": int(row[0]),
+            "indoor_temp": row[1],
+            "indoor_temp_source": row[2],
+            "outdoor_temp": row[3],
+            "outdoor_temp_source": row[4],
+            "supply_temp": row[5],
+            "supply_temp_source": row[6],
+            "power": row[7],
+            "power_sources": power_sources,
+        }
 
     def _poll_device(
         self,
@@ -559,6 +611,180 @@ class DevicePoller:
                     """,
                     rows,
                 )
+                self._refresh_control_inputs(conn=conn, ts_ms=ts_ms)
+
+    def _refresh_control_inputs(self, conn: sqlite3.Connection, ts_ms: int) -> None:
+        control_inputs = self._settings.get("control_inputs") if isinstance(self._settings, dict) else None
+        if not isinstance(control_inputs, dict):
+            return
+
+        max_age_seconds = self._safe_int(control_inputs.get("max_age_seconds"))
+        if max_age_seconds is None or max_age_seconds < 0:
+            return
+        max_age_ms = max_age_seconds * 1000
+
+        resolved = {
+            "indoor_temp": self._resolve_control_input(
+                conn=conn,
+                spec=control_inputs.get("indoor_temp"),
+                max_age_ms=max_age_ms,
+                reference_ts_ms=ts_ms,
+            ),
+            "outdoor_temp": self._resolve_control_input(
+                conn=conn,
+                spec=control_inputs.get("outdoor_temp"),
+                max_age_ms=max_age_ms,
+                reference_ts_ms=ts_ms,
+            ),
+            "supply_temp": self._resolve_control_input(
+                conn=conn,
+                spec=control_inputs.get("supply_temp"),
+                max_age_ms=max_age_ms,
+                reference_ts_ms=ts_ms,
+            ),
+            "power": self._resolve_control_input(
+                conn=conn,
+                spec=control_inputs.get("power"),
+                max_age_ms=max_age_ms,
+                reference_ts_ms=ts_ms,
+            ),
+        }
+
+        conn.execute(
+            """
+            INSERT INTO control_inputs (
+                ts,
+                indoor_temp,
+                indoor_temp_source,
+                outdoor_temp,
+                outdoor_temp_source,
+                supply_temp,
+                supply_temp_source,
+                power,
+                power_sources
+            ) VALUES (
+                :ts,
+                :indoor_temp,
+                :indoor_temp_source,
+                :outdoor_temp,
+                :outdoor_temp_source,
+                :supply_temp,
+                :supply_temp_source,
+                :power,
+                :power_sources
+            )
+            """,
+            {
+                "ts": ts_ms,
+                "indoor_temp": resolved["indoor_temp"].value,
+                "indoor_temp_source": resolved["indoor_temp"].source,
+                "outdoor_temp": resolved["outdoor_temp"].value,
+                "outdoor_temp_source": resolved["outdoor_temp"].source,
+                "supply_temp": resolved["supply_temp"].value,
+                "supply_temp_source": resolved["supply_temp"].source,
+                "power": resolved["power"].value if resolved["power"].value is not None else 0.0,
+                "power_sources": json.dumps(resolved["power"].sources or [], ensure_ascii=False),
+            },
+        )
+
+    def _resolve_control_input(
+        self,
+        conn: sqlite3.Connection,
+        spec: Any,
+        max_age_ms: int,
+        reference_ts_ms: int,
+    ) -> ResolvedControlInput:
+        if not isinstance(spec, dict):
+            return ResolvedControlInput(value=None)
+
+        select = str(spec.get("select") or "").strip()
+        sources = spec.get("sources")
+        if not isinstance(sources, list) or not sources:
+            default_value = self._safe_float(spec.get("default")) if select == "sum_all_available" else None
+            return ResolvedControlInput(value=default_value)
+
+        if select == "highest_priority_available":
+            for item in sources:
+                resolved = self._resolve_source_metric(
+                    conn=conn,
+                    spec=item,
+                    max_age_ms=max_age_ms,
+                    reference_ts_ms=reference_ts_ms,
+                )
+                if resolved is not None:
+                    return ResolvedControlInput(
+                        value=resolved["value"],
+                        source=resolved["source"],
+                    )
+            return ResolvedControlInput(value=None)
+
+        if select == "sum_all_available":
+            total = 0.0
+            used_sources: list[str] = []
+            for item in sources:
+                resolved = self._resolve_source_metric(
+                    conn=conn,
+                    spec=item,
+                    max_age_ms=max_age_ms,
+                    reference_ts_ms=reference_ts_ms,
+                )
+                if resolved is None:
+                    continue
+                total += resolved["value"]
+                used_sources.append(resolved["source"])
+            if used_sources:
+                return ResolvedControlInput(value=total, sources=used_sources)
+            default_value = self._safe_float(spec.get("default"))
+            return ResolvedControlInput(value=default_value if default_value is not None else 0.0, sources=[])
+
+        return ResolvedControlInput(value=None)
+
+    def _resolve_source_metric(
+        self,
+        conn: sqlite3.Connection,
+        spec: Any,
+        max_age_ms: int,
+        reference_ts_ms: int,
+    ) -> dict[str, Any] | None:
+        if not isinstance(spec, dict):
+            return None
+        device_type = spec.get("device_type")
+        device_id = spec.get("device_id")
+        metric = spec.get("metric")
+        if not device_type or device_id is None or not metric:
+            return None
+
+        row = conn.execute(
+            """
+            SELECT ts, value
+            FROM metrics
+            WHERE device_type = :device_type
+              AND device_id = :device_id
+              AND metric = :metric
+            ORDER BY ts DESC
+            LIMIT 1
+            """,
+            {
+                "device_type": str(device_type),
+                "device_id": str(device_id),
+                "metric": str(metric),
+            },
+        ).fetchone()
+        if row is None:
+            return None
+
+        sample_ts = self._safe_int(row[0])
+        sample_value = self._safe_float(row[1])
+        if sample_ts is None or sample_value is None:
+            return None
+        if reference_ts_ms - sample_ts > max_age_ms:
+            return None
+
+        correction = self._safe_float(spec.get("correction")) or 0.0
+        return {
+            "value": sample_value + correction,
+            "source": f"{device_type}:{device_id}:{metric}",
+        }
 
     def _ensure_tables(self, conn: sqlite3.Connection) -> None:
         conn.execute(
@@ -627,6 +853,43 @@ class DevicePoller:
                 "unit": "TEXT",
                 "labels": "TEXT",
                 "component": "TEXT",
+            },
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS control_inputs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ts INTEGER NOT NULL,
+                indoor_temp REAL,
+                indoor_temp_source TEXT,
+                outdoor_temp REAL,
+                outdoor_temp_source TEXT,
+                supply_temp REAL,
+                supply_temp_source TEXT,
+                power REAL NOT NULL DEFAULT 0,
+                power_sources TEXT
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_control_inputs_ts
+            ON control_inputs (ts)
+            """
+        )
+        self._ensure_columns(
+            conn,
+            table_name="control_inputs",
+            expected_columns={
+                "ts": "INTEGER NOT NULL",
+                "indoor_temp": "REAL",
+                "indoor_temp_source": "TEXT",
+                "outdoor_temp": "REAL",
+                "outdoor_temp_source": "TEXT",
+                "supply_temp": "REAL",
+                "supply_temp_source": "TEXT",
+                "power": "REAL NOT NULL DEFAULT 0",
+                "power_sources": "TEXT",
             },
         )
 

@@ -47,6 +47,7 @@ class DummyController:
 
 class DummyDevicePoller:
     latest_payloads = {}
+    latest_control_inputs = None
 
     def __init__(self, settings_data, data_dir=None):
         self.settings_data = settings_data
@@ -76,10 +77,14 @@ class DummyDevicePoller:
     def get_latest_payloads(self):
         return self.latest_payloads.copy()
 
+    def get_latest_control_inputs(self):
+        return self.latest_control_inputs
+
 
 def build_routes(tmp_path, monkeypatch, parsed_settings=None, latest_payloads=None):
     settings = parsed_settings or {"devices": {}}
     DummyDevicePoller.latest_payloads = latest_payloads or {}
+    DummyDevicePoller.latest_control_inputs = None
     monkeypatch.setattr(main, "Whatsminer", DummyMiner, raising=False)
     monkeypatch.setattr(main, "TemperatureController", DummyController, raising=False)
     monkeypatch.setattr(main, "DevicePoller", DummyDevicePoller, raising=False)
@@ -141,6 +146,7 @@ def test_ui_respects_root_path(tmp_path, monkeypatch):
     ui_markup = ui_resp.body.decode()
     assert 'href="/app/config"' in ui_markup
     assert 'href="/app/metrics"' in ui_markup
+    assert 'id="control-inputs"' in ui_markup
     assert 'const rootPath = "/app";' in ui_markup
 
     config_resp = routes["/config"](make_request("/config", root_path="/app"))
@@ -221,3 +227,24 @@ def test_devices_view_lists_virtual_weather_devices(tmp_path, monkeypatch):
     body = resp.body.decode()
 
     assert "open_meteo 1001 (virtual)" in body
+
+
+def test_control_inputs_api_returns_latest_payload(tmp_path, monkeypatch):
+    routes = build_routes(tmp_path, monkeypatch)
+    DummyDevicePoller.latest_control_inputs = {
+        "ts": 123,
+        "indoor_temp": 21.5,
+        "indoor_temp_source": "zont:12000:room_temp",
+        "outdoor_temp": 3.0,
+        "outdoor_temp_source": "open_meteo:1001:temperature_2m",
+        "supply_temp": None,
+        "supply_temp_source": None,
+        "power": 900.0,
+        "power_sources": ["whatsminer:1:power"],
+    }
+
+    payload = routes["/api/control-inputs/latest"]()
+
+    assert payload["data"] is not None
+    assert payload["data"]["indoor_temp"] == 21.5
+    assert payload["data"]["power_sources"] == ["whatsminer:1:power"]

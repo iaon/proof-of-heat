@@ -378,6 +378,206 @@ def test_zont_device_selected_by_serial_and_metrics_persisted(monkeypatch, tmp_p
     assert points[0]["value"] == 22.9
 
 
+def test_control_inputs_are_resolved_and_persisted(monkeypatch, tmp_path):
+    settings = {
+        "location": {
+            "name": "Moscow",
+            "latitude": 55.7558,
+            "longitude": 37.6173,
+            "timezone": "Europe/Moscow",
+        },
+        "devices": {
+            "open_meteo": [{"device_id": 1001, "type": "virtual"}],
+            "met_no": [{"device_id": 1002, "type": "virtual"}],
+            "whatsminer": [
+                {
+                    "device_id": "miner01",
+                    "login": "login",
+                    "password": "pass",
+                    "host": "example.com",
+                    "port": 4028,
+                }
+            ],
+        },
+        "control_inputs": {
+            "max_age_seconds": 180,
+            "indoor_temp": {
+                "select": "highest_priority_available",
+                "sources": [
+                    {
+                        "device_type": "open_meteo",
+                        "device_id": "1001",
+                        "metric": "temperature_2m",
+                        "correction": -0.5,
+                    },
+                    {
+                        "device_type": "met_no",
+                        "device_id": "1002",
+                        "metric": "air_temperature",
+                    },
+                ],
+            },
+            "outdoor_temp": {
+                "select": "highest_priority_available",
+                "sources": [
+                    {
+                        "device_type": "met_no",
+                        "device_id": "1002",
+                        "metric": "air_temperature",
+                        "correction": 0.2,
+                    }
+                ],
+            },
+            "supply_temp": {
+                "select": "highest_priority_available",
+                "sources": [
+                    {
+                        "device_type": "whatsminer",
+                        "device_id": "miner01",
+                        "metric": "board_temperature_0",
+                    }
+                ],
+            },
+            "power": {
+                "select": "sum_all_available",
+                "default": 0,
+                "sources": [
+                    {
+                        "device_type": "whatsminer",
+                        "device_id": "miner01",
+                        "metric": "power",
+                    },
+                    {
+                        "device_type": "met_no",
+                        "device_id": "1002",
+                        "metric": "air_temperature",
+                        "correction": 1.0,
+                    },
+                ],
+            },
+        },
+    }
+
+    monkeypatch.setattr(device_polling.DevicePoller, "_ping_host", lambda *args, **kwargs: True)
+    monkeypatch.setattr(
+        device_polling,
+        "call_whatsminer",
+        lambda **kwargs: {
+            "when": "2026-03-29T10:15:00+00:00",
+            "msg": {
+                "summary": {
+                    "power": 1000,
+                    "board-temperature": [55.0],
+                }
+            },
+        },
+    )
+    monkeypatch.setattr(
+        device_polling,
+        "fetch_met_no_weather",
+        lambda **kwargs: {
+            "provider": "met_no",
+            "timestamp": "2026-03-29T10:15:00+00:00",
+            "current": {"air_temperature": 2.3},
+            "units": {"air_temperature": "celsius"},
+            "source": kwargs,
+        },
+    )
+    monkeypatch.setattr(
+        device_polling,
+        "fetch_open_meteo_weather",
+        lambda **kwargs: {
+            "provider": "open_meteo",
+            "timestamp": "2026-03-29T10:15:00+00:00",
+            "current": {"temperature_2m": 6.4},
+            "units": {"temperature_2m": "celsius"},
+            "source": kwargs,
+        },
+    )
+
+    poller = DevicePoller(settings, data_dir=tmp_path)
+    poller.poll_met_no_device(settings["devices"]["met_no"][0])
+    poller.poll_open_meteo_device(settings["devices"]["open_meteo"][0])
+    poller.poll_whatsminer_device(settings["devices"]["whatsminer"][0])
+
+    db_path = tmp_path / "telemetry.sqlite3"
+    with sqlite3.connect(db_path) as conn:
+        row = conn.execute(
+            """
+            SELECT indoor_temp, indoor_temp_source, outdoor_temp, outdoor_temp_source,
+                   supply_temp, supply_temp_source, power, power_sources
+            FROM control_inputs
+            ORDER BY id DESC
+            LIMIT 1
+            """
+        ).fetchone()
+
+    assert row is not None
+    assert row[0] == 5.9
+    assert row[1] == "open_meteo:1001:temperature_2m"
+    assert row[2] == 2.5
+    assert row[3] == "met_no:1002:air_temperature"
+    assert row[4] == 55.0
+    assert row[5] == "whatsminer:miner01:board_temperature_0"
+    assert row[6] == 1003.3
+    assert json.loads(row[7]) == [
+        "whatsminer:miner01:power",
+        "met_no:1002:air_temperature",
+    ]
+
+
+def test_control_inputs_ignore_stale_metrics_and_default_power_to_zero(tmp_path):
+    settings = {
+        "control_inputs": {
+            "max_age_seconds": 10,
+            "indoor_temp": {
+                "select": "highest_priority_available",
+                "sources": [
+                    {
+                        "device_type": "open_meteo",
+                        "device_id": "1001",
+                        "metric": "temperature_2m",
+                    }
+                ],
+            },
+            "power": {
+                "select": "sum_all_available",
+                "default": 0,
+                "sources": [
+                    {
+                        "device_type": "whatsminer",
+                        "device_id": "miner01",
+                        "metric": "power",
+                    }
+                ],
+            },
+        }
+    }
+
+    poller = DevicePoller(settings, data_dir=tmp_path)
+    stale_ts = 1_000
+    with sqlite3.connect(tmp_path / "telemetry.sqlite3") as conn:
+        poller._ensure_tables(conn)
+        conn.execute(
+            """
+            INSERT INTO metrics (ts, device_type, device_id, metric, value, unit)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (stale_ts, "open_meteo", "1001", "temperature_2m", 9.0, "celsius"),
+        )
+        poller._refresh_control_inputs(conn=conn, ts_ms=stale_ts + 11_000)
+        row = conn.execute(
+            """
+            SELECT indoor_temp, power, power_sources
+            FROM control_inputs
+            ORDER BY id DESC
+            LIMIT 1
+            """
+        ).fetchone()
+
+    assert row == (None, 0.0, "[]")
+
+
 def test_zont_refresh_interval_180_is_valid(monkeypatch, tmp_path):
     settings = {
         "devices": {

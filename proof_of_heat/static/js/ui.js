@@ -1,6 +1,7 @@
 const apiUrl = (path) => `${rootPath}${path}`;
 const statusEl = document.getElementById("status");
 const weatherEl = document.getElementById("weather");
+const controlInputsEl = document.getElementById("control-inputs");
 const weatherLocationEl = document.getElementById("weather-location");
 const targetEl = document.getElementById("target");
 const modeEl = document.getElementById("mode");
@@ -9,28 +10,40 @@ const powerEl = document.getElementById("power");
 async function loadStatus() {
     statusEl.textContent = "Loading...";
     weatherEl.textContent = "Loading...";
+    controlInputsEl.textContent = "Loading...";
     weatherLocationEl.textContent = "";
     try {
-        const res = await fetch(apiUrl("/status"));
-        const data = await res.json();
-        statusEl.textContent = JSON.stringify(data, null, 2);
-        if (data.target_temperature_c !== undefined) {
-            targetEl.value = data.target_temperature_c;
+        const [statusRes, controlInputsRes] = await Promise.all([
+            fetch(apiUrl("/status")),
+            fetch(apiUrl("/api/control-inputs/latest")),
+        ]);
+        const statusData = await statusRes.json();
+        const controlInputsData = await controlInputsRes.json();
+
+        statusEl.textContent = JSON.stringify(statusData, null, 2);
+        if (statusData.target_temperature_c !== undefined) {
+            targetEl.value = statusData.target_temperature_c;
         }
-        if (data.mode) {
-            modeEl.value = data.mode;
+        if (statusData.mode) {
+            modeEl.value = statusData.mode;
         }
-        if (data.weather) {
-            weatherEl.textContent = JSON.stringify(data.weather, null, 2);
-            if (data.weather.location && data.weather.location.name) {
-                weatherLocationEl.textContent = data.weather.location.name;
+        if (statusData.weather) {
+            weatherEl.textContent = JSON.stringify(statusData.weather, null, 2);
+            if (statusData.weather.location && statusData.weather.location.name) {
+                weatherLocationEl.textContent = statusData.weather.location.name;
             }
         } else {
             weatherEl.textContent = "No weather data configured.";
         }
+        if (controlInputsData.data) {
+            controlInputsEl.textContent = JSON.stringify(controlInputsData.data, null, 2);
+        } else {
+            controlInputsEl.textContent = "No control inputs available.";
+        }
     } catch (err) {
         statusEl.textContent = "Failed to load status: " + err;
         weatherEl.textContent = "Failed to load weather: " + err;
+        controlInputsEl.textContent = "Failed to load control inputs: " + err;
     }
 }
 

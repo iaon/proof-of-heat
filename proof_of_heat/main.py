@@ -205,6 +205,11 @@ def create_app(config: AppConfig = DEFAULT_CONFIG) -> FastAPI:
         )
         return {"points": points}
 
+    @app.get("/api/control-inputs/latest")
+    @app.get("/api/control-inputs/latest/")
+    def get_latest_control_inputs() -> Dict[str, Any]:
+        return {"data": device_poller.get_latest_control_inputs()}
+
     def _parse_iso_datetime(value: str | None) -> int | None:
         if not value:
             return None
