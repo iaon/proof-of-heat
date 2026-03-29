@@ -361,9 +361,15 @@ def create_app(config: AppConfig = DEFAULT_CONFIG) -> FastAPI:
                     .row { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; }
                     label { font-weight: 600; }
                     select, input { padding: 6px 8px; border-radius: 4px; border: 1px solid #cbd5e1; }
+                    #metric { min-width: 520px; }
+                    .metric-meta { margin-top: 10px; font-size: 14px; color: #334155; }
+                    .metric-meta code { background: #e2e8f0; color: #0f172a; padding: 2px 6px; border-radius: 4px; }
                     button { cursor: pointer; padding: 8px 12px; border: none; background: #2563eb; color: white; border-radius: 4px; }
                     .muted { color: #64748b; }
                     canvas { max-width: 100%; }
+                    @media (max-width: 900px) {
+                        #metric { min-width: 260px; width: 100%; }
+                    }
                 </style>
                 <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
             </head>
@@ -381,6 +387,10 @@ def create_app(config: AppConfig = DEFAULT_CONFIG) -> FastAPI:
 
                         <label for="metric">Metric</label>
                         <select id="metric"></select>
+                    </div>
+                    <div class="metric-meta">
+                        <div>Full DB metric name: <code id="metric-full-name">—</code></div>
+                        <div>Description: <span id="metric-human">—</span></div>
                     </div>
                     <div class="row">
                         <label for="start-date">Start</label>
@@ -408,6 +418,8 @@ def create_app(config: AppConfig = DEFAULT_CONFIG) -> FastAPI:
                     const deviceTypeEl = document.getElementById('device-type');
                     const deviceIdEl = document.getElementById('device-id');
                     const metricEl = document.getElementById('metric');
+                    const metricFullNameEl = document.getElementById('metric-full-name');
+                    const metricHumanEl = document.getElementById('metric-human');
                     const startDateEl = document.getElementById('start-date');
                     const startHourEl = document.getElementById('start-hour');
                     const startMinuteEl = document.getElementById('start-minute');
@@ -492,16 +504,59 @@ def create_app(config: AppConfig = DEFAULT_CONFIG) -> FastAPI:
                         return date ? date.getTime() : null;
                     }
 
+                    function prettifyMetricName(name) {
+                        return name.replaceAll('_', ' ');
+                    }
+
+                    function describeZontMetric(metricName) {
+                        let match = metricName.match(/^io_thermometers_state_([a-zA-Z0-9]+)_last_value$/);
+                        if (match) {
+                            const sensorId = match[1];
+                            return `Thermometer ${sensorId.slice(0, 8)}: temperature`;
+                        }
+                        match = metricName.match(/^io_thermometers_state_([a-zA-Z0-9]+)_last_value_time$/);
+                        if (match) {
+                            const sensorId = match[1];
+                            return `Thermometer ${sensorId.slice(0, 8)}: last value time (epoch seconds)`;
+                        }
+                        match = metricName.match(/^io_last_boiler_state_(.+)$/);
+                        if (match) {
+                            return `Boiler state: ${prettifyMetricName(match[1])}`;
+                        }
+                        if (metricName.startsWith('io_')) {
+                            return `I/O metric: ${prettifyMetricName(metricName.slice(3))}`;
+                        }
+                        return `ZONT metric: ${prettifyMetricName(metricName)}`;
+                    }
+
+                    function describeMetric(deviceType, metricName) {
+                        if (!metricName) {
+                            return '—';
+                        }
+                        if (deviceType === 'zont') {
+                            return describeZontMetric(metricName);
+                        }
+                        return prettifyMetricName(metricName);
+                    }
+
+                    function updateMetricInfo() {
+                        const metricName = metricEl.value || '';
+                        metricFullNameEl.textContent = metricName || '—';
+                        metricHumanEl.textContent = describeMetric(deviceTypeEl.value, metricName);
+                    }
+
                     async function loadDeviceTypes() {
                         const res = await fetch(apiUrl('/api/metrics/device-types'));
                         const data = await res.json();
                         setOptions(deviceTypeEl, data.device_types || []);
+                        updateMetricInfo();
                     }
 
                     async function loadDeviceIds() {
                         const type = deviceTypeEl.value;
                         if (!type) {
                             setOptions(deviceIdEl, []);
+                            updateMetricInfo();
                             return;
                         }
                         const res = await fetch(apiUrl(`/api/metrics/device-ids?device_type=${encodeURIComponent(type)}`));
@@ -514,11 +569,13 @@ def create_app(config: AppConfig = DEFAULT_CONFIG) -> FastAPI:
                         const id = deviceIdEl.value;
                         if (!type || !id) {
                             setOptions(metricEl, []);
+                            updateMetricInfo();
                             return;
                         }
                         const res = await fetch(apiUrl(`/api/metrics/metric-names?device_type=${encodeURIComponent(type)}&device_id=${encodeURIComponent(id)}`));
                         const data = await res.json();
                         setOptions(metricEl, data.metrics || []);
+                        updateMetricInfo();
                     }
 
                     async function loadChart() {
@@ -618,13 +675,18 @@ def create_app(config: AppConfig = DEFAULT_CONFIG) -> FastAPI:
                     deviceTypeEl.addEventListener('change', async () => {
                         await loadDeviceIds();
                         await loadMetrics();
+                        updateMetricInfo();
                         loadChart();
                     });
                     deviceIdEl.addEventListener('change', async () => {
                         await loadMetrics();
+                        updateMetricInfo();
                         loadChart();
                     });
-                    metricEl.addEventListener('change', loadChart);
+                    metricEl.addEventListener('change', () => {
+                        updateMetricInfo();
+                        loadChart();
+                    });
                     document.getElementById('apply').addEventListener('click', loadChart);
 
                     const now = new Date();
@@ -641,6 +703,7 @@ def create_app(config: AppConfig = DEFAULT_CONFIG) -> FastAPI:
                     endSecondEl.value = endParts.second;
 
                     loadDeviceTypes();
+                    updateMetricInfo();
                 </script>
             </body>
             </html>
