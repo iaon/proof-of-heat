@@ -271,6 +271,119 @@ def test_met_no_metrics_use_poll_time_instead_of_provider_hour_bucket(monkeypatc
     assert int(provider_ts[0]) == poller._to_epoch_ms("2026-03-29T10:00:00+00:00")
 
 
+def test_whatsminer_collects_summary_pools_and_device_info(monkeypatch, tmp_path):
+    settings = {
+        "devices": {
+            "whatsminer": [
+                {
+                    "device_id": "miner01",
+                    "login": "login",
+                    "password": "pass",
+                    "host": "example.com",
+                    "port": 4028,
+                }
+            ]
+        }
+    }
+
+    calls = []
+
+    def fake_call_whatsminer(**kwargs):
+        calls.append((kwargs["cmd"], kwargs.get("param")))
+        if kwargs["cmd"] == "get.miner.status" and kwargs.get("param") == "summary":
+            return {
+                "when": "2026-03-29T10:15:00+00:00",
+                "msg": {
+                    "summary": {
+                        "power": 1000,
+                        "board-temperature": [55.0],
+                    }
+                },
+            }
+        if kwargs["cmd"] == "get.miner.status" and kwargs.get("param") == "pools":
+            return {
+                "when": "2026-03-29T10:15:00+00:00",
+                "msg": {
+                    "pools": [
+                        {
+                            "id": 1,
+                            "url": "stratum+tcp://pool.example.com:3333",
+                            "user": "worker1",
+                            "reject-rate": 0.7,
+                            "last-share-time": 214748364.7,
+                        }
+                    ]
+                },
+            }
+        if kwargs["cmd"] == "get.device.info":
+            return {
+                "when": "2026-03-29T10:15:00+00:00",
+                "msg": {
+                    "system": {
+                        "fwversion": "test-fw",
+                    },
+                    "power": {
+                        "model": "P221B",
+                        "iin": 7.96,
+                        "vin": 234,
+                        "vout": 1135,
+                        "pin": 1869,
+                        "fanspeed": 4992,
+                        "temp0": 50,
+                    },
+                },
+            }
+        raise AssertionError(f"Unexpected Whatsminer call: {kwargs}")
+
+    monkeypatch.setattr(device_polling.DevicePoller, "_ping_host", lambda *args, **kwargs: True)
+    monkeypatch.setattr(device_polling, "call_whatsminer", fake_call_whatsminer)
+
+    poller = DevicePoller(settings, data_dir=tmp_path)
+    payload = poller.poll_whatsminer_device(settings["devices"]["whatsminer"][0])
+
+    assert calls == [
+        ("get.miner.status", "summary"),
+        ("get.miner.status", "pools"),
+        ("get.device.info", None),
+    ]
+    assert payload["summary"]["msg"]["summary"]["power"] == 1000
+    assert payload["pools"]["msg"]["pools"][0]["user"] == "worker1"
+    assert payload["device_info"]["msg"]["power"]["model"] == "P221B"
+
+    db_path = tmp_path / "telemetry.sqlite3"
+    with sqlite3.connect(db_path) as conn:
+        raw_event = conn.execute(
+            """
+            SELECT payload
+            FROM raw_events
+            WHERE device_type = 'whatsminer' AND device_id = 'miner01'
+            ORDER BY id DESC
+            LIMIT 1
+            """
+        ).fetchone()
+
+    assert raw_event is not None
+    raw_payload = json.loads(raw_event[0])
+    assert "summary" in raw_payload
+    assert "pools" in raw_payload
+    assert "device_info" in raw_payload
+    assert raw_payload["device_info"]["msg"]["system"]["fwversion"] == "test-fw"
+
+    metric_names = set(poller.list_metric_names("whatsminer", "miner01"))
+    assert {
+        "power",
+        "board_temperature_0",
+        "pool_1_reject_rate",
+        "pool_1_last_share_time",
+        "psu_iin",
+        "psu_vin",
+        "psu_vout",
+        "psu_pin",
+        "psu_fanspeed",
+        "psu_temp0",
+    } <= metric_names
+
+
 def test_zont_device_selected_by_serial_and_metrics_persisted(monkeypatch, tmp_path):
     settings = {
         "integrations": {
@@ -459,19 +572,30 @@ def test_control_inputs_are_resolved_and_persisted(monkeypatch, tmp_path):
     }
 
     monkeypatch.setattr(device_polling.DevicePoller, "_ping_host", lambda *args, **kwargs: True)
-    monkeypatch.setattr(
-        device_polling,
-        "call_whatsminer",
-        lambda **kwargs: {
-            "when": "2026-03-29T10:15:00+00:00",
-            "msg": {
-                "summary": {
-                    "power": 1000,
-                    "board-temperature": [55.0],
-                }
-            },
-        },
-    )
+    def fake_call_whatsminer(**kwargs):
+        if kwargs["cmd"] == "get.miner.status" and kwargs.get("param") == "summary":
+            return {
+                "when": "2026-03-29T10:15:00+00:00",
+                "msg": {
+                    "summary": {
+                        "power": 1000,
+                        "board-temperature": [55.0],
+                    }
+                },
+            }
+        if kwargs["cmd"] == "get.miner.status" and kwargs.get("param") == "pools":
+            return {
+                "when": "2026-03-29T10:15:00+00:00",
+                "msg": {"pools": []},
+            }
+        if kwargs["cmd"] == "get.device.info":
+            return {
+                "when": "2026-03-29T10:15:00+00:00",
+                "msg": {"model": "M50"},
+            }
+        raise AssertionError(f"Unexpected Whatsminer call: {kwargs}")
+
+    monkeypatch.setattr(device_polling, "call_whatsminer", fake_call_whatsminer)
     monkeypatch.setattr(
         device_polling,
         "fetch_met_no_weather",

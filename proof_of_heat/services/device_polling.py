@@ -410,43 +410,110 @@ class DevicePoller:
             return {"error": "Missing Whatsminer login/password", "device_id": device.get("device_id")}
 
         try:
-            response = call_whatsminer(
+            summary_response = self._call_whatsminer_status(
                 host=str(host),
-                port=int(device.get("port", DEFAULT_PORT) or DEFAULT_PORT),
-                account=str(login),
-                account_password=str(password),
-                cmd="get.miner.status",
+                login=str(login),
+                password=str(password),
+                device=device,
                 param="summary",
-                timeout=int(device.get("timeout", DEFAULT_TIMEOUT) or DEFAULT_TIMEOUT),
+            )
+            pools_response = self._call_whatsminer_status(
+                host=str(host),
+                login=str(login),
+                password=str(password),
+                device=device,
+                param="pools",
+            )
+            device_info_response = self._call_whatsminer(
+                host=str(host),
+                login=str(login),
+                password=str(password),
+                device=device,
+                cmd="get.device.info",
             )
         except Exception as exc:  # pragma: no cover - defensive fallback
             return {
                 "error": f"Whatsminer call failed: {exc}",
                 "device_id": device.get("device_id"),
             }
-        logger.debug("Whatsminer response code=%s for device %s", response.get("code"), device.get("device_id"))
-        logger.log(TRACE_LEVEL, "Whatsminer response payload: %s", response)
+        logger.debug(
+            "Whatsminer summary response code=%s for device %s",
+            summary_response.get("code"),
+            device.get("device_id"),
+        )
+        logger.log(TRACE_LEVEL, "Whatsminer combined response payload: %s", {
+            "summary": summary_response,
+            "pools": pools_response,
+            "device_info": device_info_response,
+        })
+
+        response = {
+            "provider": "whatsminer",
+            "device_id": str(device.get("device_id", "unknown")),
+            "summary": summary_response,
+            "pools": pools_response,
+            "device_info": device_info_response,
+        }
 
         if self._db_path:
             device_id = str(device.get("device_id", "unknown"))
-            ts_ms = self._to_epoch_ms(response.get("when"))
+            ts_ms = self._to_epoch_ms(summary_response.get("when"))
             self._write_raw_event(
                 ts_ms=ts_ms,
                 device_type="whatsminer",
                 device_id=device_id,
                 payload=response,
             )
-            summary = self._extract_whatsminer_summary(response)
+            summary = self._extract_whatsminer_summary(summary_response)
+            metrics: list[MetricSample] = []
             if summary:
-                metrics = self._extract_whatsminer_metrics(summary)
-                if metrics:
-                    self._write_metrics(
-                        ts_ms=ts_ms,
-                        device_type="whatsminer",
-                        device_id=device_id,
-                        metrics=metrics,
-                    )
+                metrics.extend(self._extract_whatsminer_metrics(summary))
+            metrics.extend(self._extract_whatsminer_pool_metrics(pools_response))
+            metrics.extend(self._extract_whatsminer_device_info_metrics(device_info_response))
+            if metrics:
+                self._write_metrics(
+                    ts_ms=ts_ms,
+                    device_type="whatsminer",
+                    device_id=device_id,
+                    metrics=metrics,
+                )
         return response
+
+    def _call_whatsminer(
+        self,
+        host: str,
+        login: str,
+        password: str,
+        device: dict[str, Any],
+        cmd: str,
+        param: Any | None = None,
+    ) -> dict[str, Any]:
+        return call_whatsminer(
+            host=host,
+            port=int(device.get("port", DEFAULT_PORT) or DEFAULT_PORT),
+            account=login,
+            account_password=password,
+            cmd=cmd,
+            param=param,
+            timeout=int(device.get("timeout", DEFAULT_TIMEOUT) or DEFAULT_TIMEOUT),
+        )
+
+    def _call_whatsminer_status(
+        self,
+        host: str,
+        login: str,
+        password: str,
+        device: dict[str, Any],
+        param: str,
+    ) -> dict[str, Any]:
+        return self._call_whatsminer(
+            host=host,
+            login=login,
+            password=password,
+            device=device,
+            cmd="get.miner.status",
+            param=param,
+        )
 
     def poll_open_meteo_device(
         self, device: dict[str, Any], request: dict[str, Any] | None = None
@@ -933,6 +1000,65 @@ class DevicePoller:
                     continue
                 metrics.append(MetricSample(name=f"board_temperature_{idx}", value=numeric))
         return metrics
+
+    def _extract_whatsminer_device_info_metrics(
+        self, response: dict[str, Any]
+    ) -> list[MetricSample]:
+        payload = response.get("msg") or response.get("Msg") or response.get("message")
+        if not isinstance(payload, dict):
+            return []
+        power_payload = payload.get("power")
+        if not isinstance(power_payload, dict):
+            return []
+
+        metrics: list[MetricSample] = []
+        for key, value in power_payload.items():
+            if not self._is_whatsminer_psu_metric_key(str(key)):
+                continue
+            numeric = self._safe_float(value)
+            if numeric is None:
+                continue
+            metrics.append(MetricSample(name=f"psu_{self._sanitize_metric_name(str(key))}", value=numeric))
+        return metrics
+
+    def _extract_whatsminer_pool_metrics(
+        self, response: dict[str, Any]
+    ) -> list[MetricSample]:
+        payload = response.get("msg") or response.get("Msg") or response.get("message")
+        if not isinstance(payload, dict):
+            return []
+        pools = payload.get("pools")
+        if not isinstance(pools, list):
+            return []
+
+        metrics: list[MetricSample] = []
+        for idx, pool in enumerate(pools, start=1):
+            if not isinstance(pool, dict):
+                continue
+            pool_id = self._safe_int(pool.get("id")) or idx
+            reject_rate = self._safe_float(pool.get("reject-rate"))
+            last_share_time = self._safe_float(pool.get("last-share-time"))
+            if reject_rate is not None:
+                metrics.append(
+                    MetricSample(
+                        name=f"pool_{pool_id}_reject_rate",
+                        value=reject_rate,
+                    )
+                )
+            if last_share_time is not None:
+                metrics.append(
+                    MetricSample(
+                        name=f"pool_{pool_id}_last_share_time",
+                        value=last_share_time,
+                    )
+                )
+        return metrics
+
+    def _is_whatsminer_psu_metric_key(self, key: str) -> bool:
+        normalized = self._sanitize_metric_name(key)
+        return normalized in {"iin", "vin", "vout", "pin", "fanspeed"} or bool(
+            re.fullmatch(r"temp\d+", normalized)
+        )
 
     def _persist_weather_payload(
         self,
