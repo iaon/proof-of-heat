@@ -1,5 +1,6 @@
 from types import SimpleNamespace
 
+import yaml
 from fastapi import FastAPI
 from fastapi.responses import HTMLResponse, JSONResponse
 from starlette.requests import Request
@@ -85,24 +86,35 @@ def build_routes(tmp_path, monkeypatch, parsed_settings=None, latest_payloads=No
     settings = parsed_settings or {"devices": {}}
     DummyDevicePoller.latest_payloads = latest_payloads or {}
     DummyDevicePoller.latest_control_inputs = None
+
+    def save_settings(raw_yaml):
+        parsed = yaml.safe_load(raw_yaml) or {}
+        settings.clear()
+        settings.update(parsed)
+        return settings
+
     monkeypatch.setattr(main, "Whatsminer", DummyMiner, raising=False)
     monkeypatch.setattr(main, "TemperatureController", DummyController, raising=False)
     monkeypatch.setattr(main, "DevicePoller", DummyDevicePoller, raising=False)
     monkeypatch.setattr(main, "human_readable_mode", lambda mode: mode.title(), raising=False)
     monkeypatch.setattr(main, "load_settings_yaml", lambda: "devices: {}\n", raising=False)
     monkeypatch.setattr(main, "parse_settings_yaml", lambda raw_yaml: settings, raising=False)
-    monkeypatch.setattr(main, "save_settings_yaml", lambda raw_yaml: settings, raising=False)
+    monkeypatch.setattr(main, "save_settings_yaml", save_settings, raising=False)
     monkeypatch.setattr(main, "FastAPI", FastAPI, raising=False)
     monkeypatch.setattr(main, "HTMLResponse", HTMLResponse, raising=False)
     monkeypatch.setattr(main, "JSONResponse", JSONResponse, raising=False)
     monkeypatch.setattr(main, "_startup_error", None)
 
     app = main.create_app(AppConfig(data_dir=tmp_path))
-    return {
-        route.path: route.endpoint
-        for route in app.routes
-        if hasattr(route, "path") and hasattr(route, "endpoint")
-    }
+    routes = {}
+    for route in app.routes:
+        if not hasattr(route, "path") or not hasattr(route, "endpoint"):
+            continue
+        routes.setdefault(route.path, route.endpoint)
+        methods = getattr(route, "methods", None) or []
+        for method in methods:
+            routes[f"{method} {route.path}"] = route.endpoint
+    return routes
 
 
 def make_request(path: str, root_path: str = "") -> Request:
@@ -146,6 +158,7 @@ def test_ui_respects_root_path(tmp_path, monkeypatch):
     ui_markup = ui_resp.body.decode()
     assert 'href="/app/config"' in ui_markup
     assert 'href="/app/metrics"' in ui_markup
+    assert 'href="/app/heating-curve"' in ui_markup
     assert 'id="control-inputs"' in ui_markup
     assert 'const rootPath = "/app";' in ui_markup
 
@@ -248,3 +261,30 @@ def test_control_inputs_api_returns_latest_payload(tmp_path, monkeypatch):
     assert payload["data"] is not None
     assert payload["data"]["indoor_temp"] == 21.5
     assert payload["data"]["power_sources"] == ["whatsminer:1:power"]
+
+
+def test_heating_curve_api_reads_and_writes_section(tmp_path, monkeypatch):
+    parsed_settings = {"devices": {}}
+    routes = build_routes(tmp_path, monkeypatch, parsed_settings=parsed_settings)
+
+    get_payload = routes["/api/heating-curve"]()
+    assert get_payload["data"]["slope"] == 1.2
+    assert get_payload["data"]["force_max_power_below_target"] is True
+
+    update_payload = routes["POST /api/heating-curve"](
+        {
+            "slope": 1.7,
+            "force_max_power_below_target": False,
+            "force_max_power_margin_c": 3.5,
+            "min_supply_temp_c": 28.0,
+            "max_supply_temp_c": 58.0,
+        }
+    )
+
+    assert update_payload["data"] == {
+        "slope": 1.7,
+        "force_max_power_below_target": False,
+        "force_max_power_margin_c": 3.5,
+        "min_supply_temp_c": 28.0,
+        "max_supply_temp_c": 58.0,
+    }

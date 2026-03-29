@@ -8,6 +8,8 @@ from html import escape
 from pathlib import Path
 from typing import Any, Dict
 
+import yaml
+
 from proof_of_heat.logging_utils import ensure_trace_level
 
 _startup_error: Exception | None = None
@@ -65,6 +67,13 @@ def render_template_text(template_name: str, replacements: Dict[str, str]) -> st
 
 CONFIG_MARKUP = load_template("config.html")
 STATIC_VERSION = _compute_static_version()
+HEATING_CURVE_DEFAULTS: Dict[str, Any] = {
+    "slope": 1.2,
+    "force_max_power_below_target": True,
+    "force_max_power_margin_c": 5.0,
+    "min_supply_temp_c": 25.0,
+    "max_supply_temp_c": 60.0,
+}
 
 try:  # Lazy import to allow a diagnostic ASGI fallback if dependencies are missing
     from fastapi import FastAPI, HTTPException, Request
@@ -148,6 +157,7 @@ def create_app(config: AppConfig = DEFAULT_CONFIG) -> FastAPI:
 
     ui_markup = load_template("ui.html")
     metrics_markup = load_template("metrics.html")
+    heating_curve_markup = load_template("heating_curve.html")
 
     @app.get("/", response_class=HTMLResponse, include_in_schema=False)
     @app.get("/ui", response_class=HTMLResponse, include_in_schema=False)
@@ -163,6 +173,11 @@ def create_app(config: AppConfig = DEFAULT_CONFIG) -> FastAPI:
     @app.get("/metrics/", response_class=HTMLResponse, include_in_schema=False)
     def metrics_view(request: Request) -> HTMLResponse:
         return HTMLResponse(render_markup(metrics_markup, request))
+
+    @app.get("/heating-curve", response_class=HTMLResponse, include_in_schema=False)
+    @app.get("/heating-curve/", response_class=HTMLResponse, include_in_schema=False)
+    def heating_curve_view(request: Request) -> HTMLResponse:
+        return HTMLResponse(render_markup(heating_curve_markup, request))
 
     @app.get("/api/config")
     @app.get("/api/config/")
@@ -180,6 +195,25 @@ def create_app(config: AppConfig = DEFAULT_CONFIG) -> FastAPI:
         parsed = save_settings_yaml(raw_yaml)
         device_poller.update_settings(parsed)
         return {"parsed": parsed}
+
+    @app.get("/api/heating-curve")
+    @app.get("/api/heating-curve/")
+    def get_heating_curve() -> Dict[str, Any]:
+        raw_yaml = load_settings_yaml()
+        parsed = parse_settings_yaml(raw_yaml)
+        return {"data": _normalize_heating_curve(parsed.get("heating_curve"))}
+
+    @app.post("/api/heating-curve")
+    @app.post("/api/heating-curve/")
+    def update_heating_curve(payload: Dict[str, Any]) -> Dict[str, Any]:
+        heating_curve = _normalize_heating_curve(payload)
+        raw_yaml = load_settings_yaml()
+        parsed = parse_settings_yaml(raw_yaml)
+        parsed["heating_curve"] = heating_curve
+        rendered_yaml = yaml.safe_dump(parsed, sort_keys=False, allow_unicode=True)
+        saved = save_settings_yaml(rendered_yaml)
+        device_poller.update_settings(saved)
+        return {"data": _normalize_heating_curve(saved.get("heating_curve"))}
 
     @app.get("/api/metrics/device-types")
     def list_metric_device_types() -> Dict[str, list[str]]:
@@ -234,6 +268,52 @@ def create_app(config: AppConfig = DEFAULT_CONFIG) -> FastAPI:
         if dt.tzinfo is None:
             dt = dt.replace(tzinfo=timezone.utc)
         return int(dt.timestamp() * 1000)
+
+    def _normalize_heating_curve(value: Any) -> Dict[str, Any]:
+        curve = value if isinstance(value, dict) else {}
+        slope = _coerce_float(curve.get("slope"), HEATING_CURVE_DEFAULTS["slope"])
+        force_max_power_below_target = _coerce_bool(
+            curve.get("force_max_power_below_target"),
+            HEATING_CURVE_DEFAULTS["force_max_power_below_target"],
+        )
+        force_max_power_margin_c = _coerce_float(
+            curve.get("force_max_power_margin_c"),
+            HEATING_CURVE_DEFAULTS["force_max_power_margin_c"],
+        )
+        min_supply_temp_c = _coerce_float(
+            curve.get("min_supply_temp_c"),
+            HEATING_CURVE_DEFAULTS["min_supply_temp_c"],
+        )
+        max_supply_temp_c = _coerce_float(
+            curve.get("max_supply_temp_c"),
+            HEATING_CURVE_DEFAULTS["max_supply_temp_c"],
+        )
+        if max_supply_temp_c < min_supply_temp_c:
+            max_supply_temp_c = min_supply_temp_c
+        return {
+            "slope": slope,
+            "force_max_power_below_target": force_max_power_below_target,
+            "force_max_power_margin_c": force_max_power_margin_c,
+            "min_supply_temp_c": min_supply_temp_c,
+            "max_supply_temp_c": max_supply_temp_c,
+        }
+
+    def _coerce_float(value: Any, default: float) -> float:
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return default
+
+    def _coerce_bool(value: Any, default: bool) -> bool:
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            lowered = value.strip().lower()
+            if lowered in {"true", "1", "yes", "on"}:
+                return True
+            if lowered in {"false", "0", "no", "off"}:
+                return False
+        return default
 
     def _load_configured_devices(
         settings_data: Dict[str, Any],

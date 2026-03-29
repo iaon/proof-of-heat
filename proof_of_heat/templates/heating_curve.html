@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Heating Curve</title>
+    <link rel="stylesheet" href="__ROOT_PATH__/static/css/app.css?v=__STATIC_VERSION__" />
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+<body>
+    <h1>Heating Curve</h1>
+    <p class="muted">Edit heating curve parameters and preview the resulting supply temperature curve.</p>
+
+    <div class="card">
+        <div class="row">
+            <label for="slope">Slope</label>
+            <input id="slope" type="number" step="0.1" min="0" />
+
+            <label for="force-max-power-margin-c">Force max power margin °C</label>
+            <input id="force-max-power-margin-c" type="number" step="0.1" />
+        </div>
+
+        <div class="row">
+            <label for="min-supply-temp-c">Min supply °C</label>
+            <input id="min-supply-temp-c" type="number" step="0.1" />
+
+            <label for="max-supply-temp-c">Max supply °C</label>
+            <input id="max-supply-temp-c" type="number" step="0.1" />
+        </div>
+
+        <div class="row">
+            <label for="force-max-power-below-target">Force max power below target</label>
+            <input id="force-max-power-below-target" type="checkbox" />
+        </div>
+
+        <div class="row">
+            <button id="reload" type="button">Reload</button>
+            <button id="save" type="button">Save</button>
+        </div>
+    </div>
+
+    <div class="card">
+        <strong>Preview</strong>
+        <p class="muted">Preview assumes 20°C indoor setpoint and shows calculated supply temperature versus outdoor temperature.</p>
+        <canvas id="heating-curve-chart" height="120"></canvas>
+    </div>
+
+    <div class="card">
+        <strong>Current values</strong>
+        <pre id="heating-curve-preview">Loading...</pre>
+    </div>
+
+    <script>
+        const rootPath = __ROOT_PATH_JSON__;
+    </script>
+    <script src="__ROOT_PATH__/static/js/heating_curve.js?v=__STATIC_VERSION__"></script>
+</body>
+</html>

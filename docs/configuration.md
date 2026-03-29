@@ -8,6 +8,7 @@ The file is a plain YAML mapping with these top-level sections:
 - `integrations` — shared credentials for external APIs.
 - `devices` — polled devices and polling intervals.
 - `control_inputs` — normalized signals used for heating control.
+- `heating_curve` — heating curve parameters and boost rules.
 
 ## Example
 
@@ -99,6 +100,13 @@ control_inputs:
         device_id: "em01"
         metric: total_active_power
         correction: 15
+
+heating_curve:
+  slope: 1.2
+  force_max_power_below_target: true
+  force_max_power_margin_c: 5.0
+  min_supply_temp_c: 25.0
+  max_supply_temp_c: 60.0
 ```
 
 ## Section Details
@@ -185,6 +193,23 @@ Current behavior:
 - `indoor_temp`, `outdoor_temp`, and `supply_temp` use `highest_priority_available`.
 - `power` uses `sum_all_available`.
 - If no fresh power sources exist, `power.default` is used.
+
+### `heating_curve`
+
+`heating_curve` defines the shape of the supply-temperature curve and the conditions for forcing maximum heating power.
+
+Supported fields:
+
+- `slope` — heating curve slope used for preview and control calculations.
+- `force_max_power_below_target` — when enabled, force maximum power if indoor temperature is too far below target.
+- `force_max_power_margin_c` — temperature gap in Celsius between target and indoor temperature that triggers forced maximum power.
+- `min_supply_temp_c` — lower clamp for calculated supply temperature.
+- `max_supply_temp_c` — upper clamp for calculated supply temperature.
+
+Current UI:
+
+- `/heating-curve` provides a dedicated editor with number inputs and a graph preview.
+- the preview assumes a 20°C indoor setpoint and plots supply temperature against outdoor temperature.
 
 ## Source of Truth
 
