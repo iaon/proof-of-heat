@@ -38,6 +38,7 @@ app: Any = _diagnostic_app(Exception("proof-of-heat app not initialized"))
 logger = logging.getLogger("proof_of_heat")
 logging.basicConfig(level=_resolve_log_level(os.getenv("LOG_LEVEL", "INFO")))
 TEMPLATES_DIR = Path(__file__).with_name("templates")
+STATIC_DIR = Path(__file__).with_name("static")
 
 
 def load_template(name: str) -> str:
@@ -49,6 +50,7 @@ CONFIG_MARKUP = load_template("config.html")
 try:  # Lazy import to allow a diagnostic ASGI fallback if dependencies are missing
     from fastapi import FastAPI, HTTPException, Request
     from fastapi.responses import HTMLResponse, JSONResponse
+    from fastapi.staticfiles import StaticFiles
     from proof_of_heat.config import DEFAULT_CONFIG, AppConfig
     from proof_of_heat.plugins.base import human_readable_mode
     from proof_of_heat.plugins.whatsminer import Whatsminer
@@ -63,6 +65,7 @@ except Exception as exc:  # pragma: no cover - defensive import guard
     FastAPI = None  # type: ignore[assignment]
     HTTPException = Exception  # type: ignore[assignment]
     Request = Any  # type: ignore[assignment]
+    StaticFiles = None  # type: ignore[assignment]
     HTMLResponse = JSONResponse = None  # type: ignore[assignment]
     DEFAULT_CONFIG = AppConfig = human_readable_mode = Whatsminer = TemperatureController = None  # type: ignore[assignment]
     load_settings_yaml = parse_settings_yaml = save_settings_yaml = None  # type: ignore[assignment]
@@ -89,6 +92,7 @@ def create_app(config: AppConfig = DEFAULT_CONFIG) -> FastAPI:
     )
 
     app = FastAPI(title="proof-of-heat MVP", version="0.1.0", root_path=root_path)
+    app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
     settings_data = parse_settings_yaml(load_settings_yaml())
     device_poller = DevicePoller(settings_data, data_dir=config.data_dir)
@@ -328,6 +332,7 @@ def create_app(config: AppConfig = DEFAULT_CONFIG) -> FastAPI:
             "__DEVICE_CARDS__",
             card_markup or '<p class="muted">No devices configured.</p>',
         )
+        page_markup = page_markup.replace("__ROOT_PATH__", escape(root_path, quote=True))
         return HTMLResponse(page_markup)
 
     return app

@@ -1,0 +1,8 @@
+textarea {
+    width: 100%;
+    min-height: 360px;
+    padding: 12px;
+    border-radius: 6px;
+    border: 1px solid #cbd5e1;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+}

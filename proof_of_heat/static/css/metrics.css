@@ -1,0 +1,127 @@
+.metric-rows {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    min-width: 520px;
+    flex: 1 1 auto;
+}
+
+.metric-row {
+    border: 1px solid #e2e8f0;
+    border-radius: 8px;
+    padding: 10px;
+    background: #f8fafc;
+}
+
+.metric-row-head {
+    display: flex;
+    gap: 8px;
+    align-items: flex-start;
+    flex-wrap: wrap;
+}
+
+.metric-row-head label {
+    font-size: 12px;
+    color: #334155;
+}
+
+.metric-row-head select {
+    min-width: 140px;
+}
+
+.metric-picker {
+    position: relative;
+    flex: 1 1 320px;
+    min-width: 260px;
+}
+
+.metric-picker input {
+    width: 100%;
+    box-sizing: border-box;
+}
+
+.metric-remove {
+    background: #dc2626;
+    padding: 6px 10px;
+    font-size: 12px;
+}
+
+.metric-dropdown {
+    position: absolute;
+    top: calc(100% + 6px);
+    left: 0;
+    right: 0;
+    max-height: 320px;
+    overflow-y: auto;
+    background: #fff;
+    border: 1px solid #cbd5e1;
+    border-radius: 8px;
+    box-shadow: 0 12px 28px rgba(15, 23, 42, 0.18);
+    z-index: 20;
+}
+
+.metric-option {
+    padding: 8px 10px;
+    border-bottom: 1px solid #e2e8f0;
+    cursor: pointer;
+}
+
+.metric-option:last-child {
+    border-bottom: none;
+}
+
+.metric-option:hover {
+    background: #f1f5f9;
+}
+
+.metric-option.active {
+    background: #dbeafe;
+}
+
+.metric-option .metric-db-name {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+    font-size: 12px;
+    color: #0f172a;
+    word-break: break-all;
+}
+
+.metric-option .metric-human-name {
+    font-size: 12px;
+    color: #475569;
+    margin-top: 2px;
+}
+
+.metric-empty {
+    padding: 10px;
+    color: #64748b;
+    font-size: 13px;
+}
+
+.metric-meta {
+    margin-top: 8px;
+    font-size: 13px;
+    color: #334155;
+}
+
+.metric-meta code {
+    background: #e2e8f0;
+    color: #0f172a;
+    padding: 2px 6px;
+    border-radius: 4px;
+}
+
+canvas {
+    max-width: 100%;
+}
+
+@media (max-width: 900px) {
+    .metric-rows {
+        min-width: 260px;
+        width: 100%;
+    }
+
+    .metric-row-head select,
+    .metric-picker {
+        width: 100%;
+    }
+}

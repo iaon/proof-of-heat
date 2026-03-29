@@ -4,16 +4,8 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>proof-of-heat Configuration</title>
-    <style>
-        body { font-family: system-ui, sans-serif; margin: 24px; color: #0f172a; background: #f8fafc; }
-        h1 { margin-top: 0; }
-        textarea { width: 100%; min-height: 360px; padding: 12px; border-radius: 6px; border: 1px solid #cbd5e1; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; }
-        button { cursor: pointer; padding: 8px 12px; border: none; background: #2563eb; color: white; border-radius: 4px; }
-        .card { background: #fff; padding: 16px; border-radius: 8px; box-shadow: 0 1px 4px rgba(0,0,0,0.1); margin-bottom: 16px; }
-        .row { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
-        .muted { color: #64748b; }
-        pre { background: #0f172a; color: #e2e8f0; padding: 12px; border-radius: 6px; overflow-x: auto; }
-    </style>
+    <link rel="stylesheet" href="__ROOT_PATH__/static/css/app.css" />
+    <link rel="stylesheet" href="__ROOT_PATH__/static/css/config.css" />
 </head>
 <body>
     <h1>Configuration</h1>
@@ -34,44 +26,7 @@
 
     <script>
         const rootPath = __ROOT_PATH_JSON__;
-        const apiUrl = (path) => `${rootPath}${path}`;
-        const settingsEl = document.getElementById('settings');
-        const previewEl = document.getElementById('preview');
-
-        async function refreshPreview(data) {
-            previewEl.textContent = JSON.stringify(data, null, 2);
-        }
-
-        async function loadSettings() {
-            previewEl.textContent = 'Loading...';
-            const res = await fetch(apiUrl('/api/config'));
-            const data = await res.json();
-            if (!res.ok) {
-                previewEl.textContent = 'Error: ' + (data.detail || 'Failed to load');
-                return;
-            }
-            settingsEl.value = data.raw_yaml || '';
-            await refreshPreview(data.parsed || {});
-        }
-
-        async function saveSettings() {
-            const res = await fetch(apiUrl('/api/config'), {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ raw_yaml: settingsEl.value }),
-            });
-            const data = await res.json();
-            if (res.ok) {
-                await refreshPreview(data.parsed || {});
-            } else {
-                previewEl.textContent = 'Error: ' + (data.detail || 'Failed to save');
-            }
-        }
-
-        document.getElementById('load').addEventListener('click', loadSettings);
-        document.getElementById('save').addEventListener('click', saveSettings);
-
-        loadSettings();
     </script>
+    <script src="__ROOT_PATH__/static/js/config.js"></script>
 </body>
 </html>
