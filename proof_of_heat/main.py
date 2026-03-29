@@ -45,6 +45,17 @@ def load_template(name: str) -> str:
     return (TEMPLATES_DIR / name).read_text(encoding="utf-8")
 
 
+def _compute_static_version() -> str:
+    mtimes = [
+        path.stat().st_mtime_ns
+        for path in STATIC_DIR.rglob("*")
+        if path.is_file()
+    ]
+    if not mtimes:
+        return "0"
+    return str(max(mtimes))
+
+
 def render_template_text(template_name: str, replacements: Dict[str, str]) -> str:
     markup = load_template(template_name)
     for key, value in replacements.items():
@@ -53,6 +64,7 @@ def render_template_text(template_name: str, replacements: Dict[str, str]) -> st
 
 
 CONFIG_MARKUP = load_template("config.html")
+STATIC_VERSION = _compute_static_version()
 
 try:  # Lazy import to allow a diagnostic ASGI fallback if dependencies are missing
     from fastapi import FastAPI, HTTPException, Request
@@ -131,6 +143,7 @@ def create_app(config: AppConfig = DEFAULT_CONFIG) -> FastAPI:
         return (
             markup.replace("__ROOT_PATH_JSON__", json.dumps(root_path))
             .replace("__ROOT_PATH__", escape(root_path, quote=True))
+            .replace("__STATIC_VERSION__", STATIC_VERSION)
         )
 
     ui_markup = load_template("ui.html")
@@ -348,6 +361,7 @@ def create_app(config: AppConfig = DEFAULT_CONFIG) -> FastAPI:
             "devices.html",
             {
                 "__ROOT_PATH__": escape(root_path, quote=True),
+                "__STATIC_VERSION__": STATIC_VERSION,
                 "__DEVICE_CARDS__": card_markup
                 or '<p class="muted">No devices configured.</p>',
             },
