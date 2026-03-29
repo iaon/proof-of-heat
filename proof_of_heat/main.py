@@ -68,8 +68,8 @@ def render_template_text(template_name: str, replacements: Dict[str, str]) -> st
 CONFIG_MARKUP = load_template("config.html")
 STATIC_VERSION = _compute_static_version()
 HEATING_CURVE_DEFAULTS: Dict[str, Any] = {
-    "slope": 1.2,
-    "exponent": 1.3,
+    "slope": 6.0,
+    "exponent": 0.4,
     "force_max_power_below_target": True,
     "force_max_power_margin_c": 5.0,
     "min_supply_temp_c": 25.0,

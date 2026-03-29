@@ -102,8 +102,8 @@ control_inputs:
         correction: 15
 
 heating_curve:
-  slope: 1.2
-  exponent: 1.3
+  slope: 6.0
+  exponent: 0.4
   force_max_power_below_target: true
   force_max_power_margin_c: 5.0
   min_supply_temp_c: 25.0
@@ -202,7 +202,7 @@ Current behavior:
 Supported fields:
 
 - `slope` — heating curve gain used for preview and control calculations.
-- `exponent` — nonlinear exponent of the heating curve. A reasonable starting value is `1.3`.
+- `exponent` — nonlinear exponent of the heating curve. The current default starting value is `0.4`.
 - `force_max_power_below_target` — when enabled, force maximum power if indoor temperature is too far below target.
 - `force_max_power_margin_c` — temperature gap in Celsius between target and indoor temperature that triggers forced maximum power.
 - `min_supply_temp_c` — lower clamp for calculated supply temperature.

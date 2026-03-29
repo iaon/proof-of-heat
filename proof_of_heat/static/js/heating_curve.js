@@ -17,8 +17,8 @@ function getFormData() {
     const minSupplyTempC = Number(minSupplyTempCEl.value);
     const maxSupplyTempC = Number(maxSupplyTempCEl.value);
     return {
-        slope: Number.isFinite(slope) ? slope : 1.2,
-        exponent: Number.isFinite(exponent) ? exponent : 1.3,
+        slope: Number.isFinite(slope) ? slope : 6.0,
+        exponent: Number.isFinite(exponent) ? exponent : 0.4,
         force_max_power_below_target: Boolean(forceMaxPowerBelowTargetEl.checked),
         force_max_power_margin_c: Number.isFinite(forceMaxPowerMarginC) ? forceMaxPowerMarginC : 5.0,
         min_supply_temp_c: Number.isFinite(minSupplyTempC) ? minSupplyTempC : 25.0,
@@ -47,10 +47,20 @@ function renderPreview() {
     previewEl.textContent = JSON.stringify(data, null, 2);
 
     const points = [];
+    const minSupplyPoints = [];
+    const maxSupplyPoints = [];
     for (let outdoorTempC = -30; outdoorTempC <= 20; outdoorTempC += 1) {
         points.push({
             x: outdoorTempC,
             y: computeCurvePoint(outdoorTempC, data),
+        });
+        minSupplyPoints.push({
+            x: outdoorTempC,
+            y: data.min_supply_temp_c,
+        });
+        maxSupplyPoints.push({
+            x: outdoorTempC,
+            y: data.max_supply_temp_c,
         });
     }
 
@@ -65,6 +75,26 @@ function renderPreview() {
                     borderColor: "#2563eb",
                     backgroundColor: "#2563eb22",
                     tension: 0.2,
+                    fill: false,
+                },
+                {
+                    label: "Min supply",
+                    data: minSupplyPoints,
+                    borderColor: "#16a34a",
+                    backgroundColor: "#16a34a22",
+                    borderDash: [6, 4],
+                    pointRadius: 0,
+                    tension: 0,
+                    fill: false,
+                },
+                {
+                    label: "Max supply",
+                    data: maxSupplyPoints,
+                    borderColor: "#dc2626",
+                    backgroundColor: "#dc262622",
+                    borderDash: [6, 4],
+                    pointRadius: 0,
+                    tension: 0,
                     fill: false,
                 },
             ],
