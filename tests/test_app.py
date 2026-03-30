@@ -3,6 +3,7 @@ from types import SimpleNamespace
 import yaml
 from fastapi import FastAPI
 from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.testclient import TestClient
 from starlette.requests import Request
 
 from proof_of_heat import main
@@ -115,6 +116,21 @@ def build_routes(tmp_path, monkeypatch, parsed_settings=None, latest_payloads=No
         for method in methods:
             routes[f"{method} {route.path}"] = route.endpoint
     return routes
+
+
+def build_app(tmp_path, monkeypatch):
+    monkeypatch.setattr(main, "Whatsminer", DummyMiner, raising=False)
+    monkeypatch.setattr(main, "TemperatureController", DummyController, raising=False)
+    monkeypatch.setattr(main, "DevicePoller", DummyDevicePoller, raising=False)
+    monkeypatch.setattr(main, "human_readable_mode", lambda mode: mode.title(), raising=False)
+    monkeypatch.setattr(main, "load_settings_yaml", lambda: "devices: {}\n", raising=False)
+    monkeypatch.setattr(main, "parse_settings_yaml", lambda raw_yaml: {"devices": {}}, raising=False)
+    monkeypatch.setattr(main, "save_settings_yaml", lambda raw_yaml: {"devices": {}}, raising=False)
+    monkeypatch.setattr(main, "FastAPI", FastAPI, raising=False)
+    monkeypatch.setattr(main, "HTMLResponse", HTMLResponse, raising=False)
+    monkeypatch.setattr(main, "JSONResponse", JSONResponse, raising=False)
+    monkeypatch.setattr(main, "_startup_error", None)
+    return main.create_app(AppConfig(data_dir=tmp_path))
 
 
 def make_request(path: str, root_path: str = "") -> Request:
@@ -280,7 +296,8 @@ def test_heating_curve_api_reads_and_writes_section(tmp_path, monkeypatch):
             "force_max_power_margin_c": 3.5,
             "min_supply_temp_c": 28.0,
             "max_supply_temp_c": 58.0,
-        }
+        },
+        make_request("/api/heating-curve"),
     )
 
     assert update_payload["data"] == {
@@ -291,3 +308,32 @@ def test_heating_curve_api_reads_and_writes_section(tmp_path, monkeypatch):
         "min_supply_temp_c": 28.0,
         "max_supply_temp_c": 58.0,
     }
+
+
+def test_debug_routes_hidden_by_default(tmp_path, monkeypatch):
+    app = build_app(tmp_path, monkeypatch)
+    client = TestClient(app)
+    response = client.get("/debug/routes")
+    assert response.status_code == 404
+
+
+def test_security_headers_present(tmp_path, monkeypatch):
+    app = build_app(tmp_path, monkeypatch)
+    client = TestClient(app)
+    response = client.get("/health")
+    assert response.status_code == 200
+    assert response.headers["x-content-type-options"] == "nosniff"
+    assert response.headers["x-frame-options"] == "DENY"
+    assert response.headers["referrer-policy"] == "no-referrer"
+
+
+def test_sensitive_endpoints_require_api_token_when_configured(tmp_path, monkeypatch):
+    monkeypatch.setenv("POH_API_TOKEN", "secret-token")
+    app = build_app(tmp_path, monkeypatch)
+    client = TestClient(app)
+
+    unauth = client.post("/mode/off")
+    assert unauth.status_code == 401
+
+    auth = client.post("/mode/off", headers={"x-api-token": "secret-token"})
+    assert auth.status_code == 200

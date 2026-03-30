@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import secrets
 from datetime import datetime, timezone
 from html import escape
 from pathlib import Path
@@ -122,6 +123,8 @@ def create_app(config: AppConfig = DEFAULT_CONFIG) -> FastAPI:
 
     app = FastAPI(title="proof-of-heat MVP", version="0.1.0", root_path=root_path)
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+    api_token = os.getenv("POH_API_TOKEN", "").strip()
+    config_max_bytes = int(os.getenv("POH_CONFIG_MAX_BYTES", "131072"))
 
     settings_data = parse_settings_yaml(load_settings_yaml())
     device_poller = DevicePoller(settings_data, data_dir=config.data_dir)
@@ -146,7 +149,27 @@ def create_app(config: AppConfig = DEFAULT_CONFIG) -> FastAPI:
 
     @app.get("/debug/routes")
     def debug_routes() -> Dict[str, Any]:
+        if os.getenv("POH_ENABLE_DEBUG_ROUTES", "").lower() not in {"1", "true", "yes", "on"}:
+            raise HTTPException(status_code=404, detail="Not found")
         return {"routes": sorted({route.path for route in app.router.routes})}
+
+    @app.middleware("http")
+    async def add_security_headers(request: Request, call_next):
+        response = await call_next(request)
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["X-Frame-Options"] = "DENY"
+        response.headers["Referrer-Policy"] = "no-referrer"
+        response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
+        if request.url.scheme == "https":
+            response.headers["Strict-Transport-Security"] = "max-age=63072000; includeSubDomains"
+        return response
+
+    def require_api_token(request: Request) -> None:
+        if not api_token:
+            return
+        x_api_token = request.headers.get("x-api-token")
+        if not x_api_token or not secrets.compare_digest(x_api_token, api_token):
+            raise HTTPException(status_code=401, detail="Unauthorized")
 
     def render_markup(markup: str, request: Request) -> str:
         root_path = request.scope.get("root_path", "").rstrip("/")
@@ -189,11 +212,17 @@ def create_app(config: AppConfig = DEFAULT_CONFIG) -> FastAPI:
 
     @app.post("/api/config")
     @app.post("/api/config/")
-    def update_config(payload: Dict[str, Any]) -> Dict[str, Any]:
+    def update_config(payload: Dict[str, Any], request: Request) -> Dict[str, Any]:
+        require_api_token(request)
         raw_yaml = payload.get("raw_yaml")
         if not isinstance(raw_yaml, str):
             raise HTTPException(status_code=400, detail="raw_yaml must be a string")
-        parsed = save_settings_yaml(raw_yaml)
+        if len(raw_yaml.encode("utf-8")) > config_max_bytes:
+            raise HTTPException(status_code=413, detail="raw_yaml payload too large")
+        try:
+            parsed = save_settings_yaml(raw_yaml)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
         device_poller.update_settings(parsed)
         return {"parsed": parsed}
 
@@ -206,13 +235,20 @@ def create_app(config: AppConfig = DEFAULT_CONFIG) -> FastAPI:
 
     @app.post("/api/heating-curve")
     @app.post("/api/heating-curve/")
-    def update_heating_curve(payload: Dict[str, Any]) -> Dict[str, Any]:
+    def update_heating_curve(
+        payload: Dict[str, Any],
+        request: Request,
+    ) -> Dict[str, Any]:
+        require_api_token(request)
         heating_curve = _normalize_heating_curve(payload)
         raw_yaml = load_settings_yaml()
         parsed = parse_settings_yaml(raw_yaml)
         parsed["heating_curve"] = heating_curve
         rendered_yaml = yaml.safe_dump(parsed, sort_keys=False, allow_unicode=True)
-        saved = save_settings_yaml(rendered_yaml)
+        try:
+            saved = save_settings_yaml(rendered_yaml)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
         device_poller.update_settings(saved)
         return {"data": _normalize_heating_curve(saved.get("heating_curve"))}
 
@@ -391,19 +427,22 @@ def create_app(config: AppConfig = DEFAULT_CONFIG) -> FastAPI:
         }
 
     @app.post("/mode/{mode}")
-    def change_mode(mode: str) -> JSONResponse:
+    def change_mode(mode: str, request: Request) -> JSONResponse:
+        require_api_token(request)
         if mode not in {"comfort", "eco", "off"}:
             raise HTTPException(status_code=400, detail="Unsupported mode")
         controller.set_mode(mode)
         return JSONResponse({"mode": mode, "mode_label": human_readable_mode(mode)})
 
     @app.post("/target-temperature")
-    def set_target(temp_c: float) -> Dict[str, float]:
+    def set_target(temp_c: float, request: Request) -> Dict[str, float]:
+        require_api_token(request)
         controller.set_target(temp_c)
         return {"target_temperature_c": temp_c}
 
     @app.post("/miner/{action}")
-    def control_miner(action: str) -> Dict[str, Any]:
+    def control_miner(action: str, request: Request) -> Dict[str, Any]:
+        require_api_token(request)
         if action == "start":
             return miner.start()
         if action == "stop":
@@ -411,7 +450,8 @@ def create_app(config: AppConfig = DEFAULT_CONFIG) -> FastAPI:
         raise HTTPException(status_code=400, detail="Unsupported action")
 
     @app.post("/miner/power-limit")
-    def set_power_limit(watts: int) -> Dict[str, Any]:
+    def set_power_limit(watts: int, request: Request) -> Dict[str, Any]:
+        require_api_token(request)
         return miner.set_power_limit(watts)
 
     @app.get("/devices", response_class=HTMLResponse, include_in_schema=False)
