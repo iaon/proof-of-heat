@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Optional
+from typing import Literal, Optional
 
 from pydantic import BaseModel, Field
 
@@ -19,6 +19,35 @@ class MinerConfig(BaseModel):
     login: Optional[str] = Field(default=None, description="Miner login account.")
     password: Optional[str] = Field(default=None, description="Miner login password.")
     timeout: int = Field(default=DEFAULT_TIMEOUT, description="API timeout (seconds).")
+    min_power: int = Field(
+        default=1000,
+        description="Minimum stable miner power in watts; lower targets should stop the miner instead.",
+    )
+
+
+class FixedPowerHeatingParams(BaseModel):
+    power_w: int = Field(description="Fixed miner power in watts.")
+
+
+class FixedSupplyTempHeatingParams(BaseModel):
+    target_supply_temp_c: float = Field(description="Target supply temperature in Celsius.")
+    tolerance_c: float = Field(default=1.0, description="Allowed supply temperature deviation in Celsius.")
+
+
+class RoomTargetHeatingParams(BaseModel):
+    target_room_temp_c: float = Field(description="Target indoor temperature in Celsius.")
+
+
+class HeatingModeConfig(BaseModel):
+    enabled: bool = Field(default=True, description="Whether automatic heating logic is enabled.")
+    type: Literal["fixed_power", "fixed_supply_temp", "room_target"] = Field(
+        default="room_target",
+        description="Heating control mode.",
+    )
+    params: FixedPowerHeatingParams | FixedSupplyTempHeatingParams | RoomTargetHeatingParams = Field(
+        default_factory=lambda: RoomTargetHeatingParams(target_room_temp_c=22.0),
+        description="Mode-specific parameters.",
+    )
 
 
 class AppConfig(BaseModel):
@@ -28,6 +57,7 @@ class AppConfig(BaseModel):
     mode: str = Field(default="comfort", description="comfort | eco | off")
     data_dir: Path = Field(default=Path("./data"))
     miner: MinerConfig = Field(default_factory=MinerConfig)
+    heating_mode: HeatingModeConfig = Field(default_factory=HeatingModeConfig)
 
     def ensure_data_dir(self) -> None:
         self.data_dir.mkdir(parents=True, exist_ok=True)

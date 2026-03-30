@@ -8,6 +8,7 @@ The file is a plain YAML mapping with these top-level sections:
 - `integrations` — shared credentials for external APIs.
 - `devices` — polled devices and polling intervals.
 - `control_inputs` — normalized signals used for heating control.
+- `heating_mode` — active heating control strategy and its parameters.
 - `heating_curve` — heating curve parameters and boost rules.
 
 ## Example
@@ -50,6 +51,7 @@ devices:
       password: "pass"
       host: "example.com"
       port: 1111
+      min_power: 1000
 
 control_inputs:
   max_age_seconds: 180
@@ -100,6 +102,12 @@ control_inputs:
         device_id: "em01"
         metric: total_active_power
         correction: 15
+
+heating_mode:
+  enabled: true
+  type: room_target
+  params:
+    target_room_temp_c: 22.0
 
 heating_curve:
   slope: 6.0
@@ -152,6 +160,7 @@ Common conventions:
 - `device_id` is the logical identifier used in stored metrics and config references.
 - Weather device IDs should be integers.
 - ZONT devices can override polling interval with `refresh_interval`.
+- WhatsMiner devices may define `min_power` in watts. This is the minimum stable operating power; future control logic can treat lower requested power as a stop condition.
 
 ### `control_inputs`
 
@@ -213,6 +222,32 @@ Current UI:
 - `/heating-curve` provides a dedicated editor with number inputs and a graph preview.
 - the preview assumes a 20°C indoor setpoint and plots supply temperature against outdoor temperature.
 - the preview formula is `20 + slope * (20 - outdoor_temp_c) ^ exponent`, clamped between `min_supply_temp_c` and `max_supply_temp_c`.
+
+### `heating_mode`
+
+`heating_mode` defines which high-level heating strategy should be active. Sensor selection is always taken from `control_inputs`, and the project assumes a single global `heating_curve`.
+
+Supported fields:
+
+- `enabled` — optional boolean, default `true`.
+- `type` — one of `fixed_power`, `fixed_supply_temp`, `room_target`.
+- `params` — mode-specific parameter mapping.
+
+Supported modes:
+
+- `fixed_power`
+  - required `params.power_w`
+- `fixed_supply_temp`
+  - required `params.target_supply_temp_c`
+  - optional `params.tolerance_c`, default `1.0`
+- `room_target`
+  - required `params.target_room_temp_c`
+
+Current status:
+
+- The configuration schema is available now.
+- Existing runtime control routes still use the legacy `mode` and `target_temperature_c` fields.
+- Future control logic should read `heating_mode` as the source of truth.
 
 ## Source of Truth
 

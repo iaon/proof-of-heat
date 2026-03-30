@@ -29,6 +29,7 @@ devices:
       password: "pass"
       host: "example.com"
       port: 1111
+      min_power: 1000
 control_inputs:
   max_age_seconds: 180
   indoor_temp:
@@ -74,6 +75,12 @@ control_inputs:
         device_id: "em01"
         metric: total_active_power
         correction: 15
+
+heating_mode:
+  enabled: true
+  type: room_target
+  params:
+    target_room_temp_c: 22.0
 
 heating_curve:
   slope: 6.0
