@@ -12,9 +12,11 @@ from proof_of_heat.config import AppConfig
 class DummyMiner:
     fetch_status_response = {"power": 1000, "fan_speed": 60}
     set_power_limit_calls = []
+    init_kwargs = []
 
     def __init__(self, *args, **kwargs):
         self.name = "dummy"
+        self.init_kwargs.append(kwargs)
 
     def fetch_status(self):
         return self.fetch_status_response
@@ -97,6 +99,7 @@ def build_routes(tmp_path, monkeypatch, parsed_settings=None, latest_payloads=No
     DummyDevicePoller.metric_catalog = {}
     DummyMiner.fetch_status_response = {"power": 1000, "fan_speed": 60}
     DummyMiner.set_power_limit_calls = []
+    DummyMiner.init_kwargs = []
 
     def save_settings(raw_yaml):
         parsed = yaml.safe_load(raw_yaml) or {}
@@ -345,6 +348,48 @@ def test_fixed_power_mode_waits_until_up_freq_finish():
 
     assert result is None
     assert DummyMiner.set_power_limit_calls == []
+
+
+def test_run_heating_mode_control_uses_first_whatsminer_device_config(monkeypatch):
+    settings = {
+        "devices": {
+            "whatsminer": [
+                {
+                    "host": "miner.local",
+                    "port": 4444,
+                    "login": "user",
+                    "password": "secret",
+                    "timeout": 12,
+                }
+            ]
+        },
+        "heating_mode": {
+            "enabled": True,
+            "type": "fixed_power",
+            "params": {"power_w": 3200},
+        },
+    }
+    DummyMiner.fetch_status_response = {
+        "code": 0,
+        "msg": {"summary": {"power-limit": 3600, "up-freq-finish": 1}},
+    }
+    DummyMiner.set_power_limit_calls = []
+    DummyMiner.init_kwargs = []
+
+    monkeypatch.setattr(main, "Whatsminer", DummyMiner, raising=False)
+    monkeypatch.setattr(main, "load_settings_yaml", lambda: "unused", raising=False)
+    monkeypatch.setattr(main, "parse_settings_yaml", lambda raw_yaml: settings, raising=False)
+
+    main._run_heating_mode_control()
+
+    assert DummyMiner.init_kwargs[-1] == {
+        "host": "miner.local",
+        "port": 4444,
+        "login": "user",
+        "password": "secret",
+        "timeout": 12,
+    }
+    assert DummyMiner.set_power_limit_calls == [3200]
 
 
 def test_heating_curve_api_reads_and_writes_section(tmp_path, monkeypatch):

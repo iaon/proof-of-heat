@@ -139,31 +139,95 @@ def _resolve_control_interval_seconds(settings_data: Dict[str, Any]) -> int:
     return max(1, interval)
 
 
+def _build_whatsminer_from_settings(settings_data: Dict[str, Any]) -> Any | None:
+    if not isinstance(settings_data, dict):
+        logger.debug("Fixed power mode skipped: settings payload is not a mapping")
+        return None
+    devices = settings_data.get("devices")
+    if not isinstance(devices, dict):
+        logger.debug("Fixed power mode skipped: devices section is missing or invalid")
+        return None
+    whatsminers = devices.get("whatsminer")
+    if not isinstance(whatsminers, list) or not whatsminers:
+        logger.debug("Fixed power mode skipped: no whatsminer devices configured")
+        return None
+    device = whatsminers[0]
+    if not isinstance(device, dict):
+        logger.warning("Fixed power mode skipped: first whatsminer device config is invalid")
+        return None
+    return Whatsminer(
+        host=device.get("host"),
+        port=device.get("port") or config_defaults_port(),
+        login=device.get("login"),
+        password=device.get("password"),
+        timeout=device.get("timeout") or config_defaults_timeout(),
+    )
+
+
+def config_defaults_port() -> int:
+    try:
+        return int(DEFAULT_CONFIG.miner.port)
+    except Exception:
+        return 4433
+
+
+def config_defaults_timeout() -> int:
+    try:
+        return int(DEFAULT_CONFIG.miner.timeout)
+    except Exception:
+        return 10
+
+
 def _apply_fixed_power_heating_mode(miner: Any, settings_data: Dict[str, Any]) -> Dict[str, Any] | None:
     if not isinstance(settings_data, dict):
+        logger.debug("Fixed power mode skipped: settings payload is not a mapping")
         return None
     heating_mode = settings_data.get("heating_mode")
     if not isinstance(heating_mode, dict):
+        logger.debug("Fixed power mode skipped: heating_mode section is missing or invalid")
         return None
     if heating_mode.get("enabled", True) is False:
+        logger.debug("Fixed power mode skipped: heating_mode is disabled")
         return None
-    if heating_mode.get("type") != "fixed_power":
+    mode_type = heating_mode.get("type")
+    if mode_type != "fixed_power":
+        logger.debug("Fixed power mode skipped: active heating_mode type is %r", mode_type)
         return None
     params = heating_mode.get("params")
     if not isinstance(params, dict):
+        logger.warning("Fixed power mode skipped: params section is missing or invalid")
         return None
 
     target_power = _safe_int(params.get("power_w"))
     if target_power is None:
+        logger.warning("Fixed power mode skipped: params.power_w is missing or invalid")
         return None
 
-    summary = _extract_whatsminer_summary(miner.fetch_status())
+    logger.debug("Fixed power mode evaluating target power %sW", target_power)
+
+    status = miner.fetch_status()
+    logger.debug("Fixed power mode raw miner status: %r", status)
+    summary = _extract_whatsminer_summary(status)
     if summary is None:
+        logger.warning("Fixed power mode skipped: unable to extract Whatsminer summary from status response")
         return None
 
     up_freq_finish = _safe_int(summary.get("up-freq-finish"))
     current_power_limit = _safe_int(summary.get("power-limit"))
-    if up_freq_finish != 1 or current_power_limit is None or current_power_limit == target_power:
+    logger.debug(
+        "Fixed power mode status: up-freq-finish=%r, power-limit=%r, target=%sW",
+        up_freq_finish,
+        current_power_limit,
+        target_power,
+    )
+    if up_freq_finish != 1:
+        logger.debug("Fixed power mode skipped: up-freq-finish=%r, waiting for frequency ramp to complete", up_freq_finish)
+        return None
+    if current_power_limit is None:
+        logger.warning("Fixed power mode skipped: summary does not contain a valid power-limit")
+        return None
+    if current_power_limit == target_power:
+        logger.debug("Fixed power mode skipped: power-limit already set to target %sW", target_power)
         return None
 
     logger.info(
@@ -174,9 +238,13 @@ def _apply_fixed_power_heating_mode(miner: Any, settings_data: Dict[str, Any]) -
     return miner.set_power_limit(target_power)
 
 
-def _run_heating_mode_control(miner: Any) -> None:
+def _run_heating_mode_control() -> None:
     try:
+        logger.debug("Heating mode control tick started")
         settings_data = parse_settings_yaml(load_settings_yaml())
+        miner = _build_whatsminer_from_settings(settings_data)
+        if miner is None:
+            return
         _apply_fixed_power_heating_mode(miner, settings_data)
     except Exception:  # pragma: no cover - defensive logging
         logger.exception("Heating mode control iteration failed")
@@ -227,11 +295,10 @@ def create_app(config: AppConfig = DEFAULT_CONFIG) -> FastAPI:
             _run_heating_mode_control,
             trigger=IntervalTrigger(seconds=_resolve_control_interval_seconds(settings_data)),
             id="heating-mode-control",
-            args=[miner],
             replace_existing=True,
         )
         control_scheduler.start()
-        _run_heating_mode_control(miner)
+        _run_heating_mode_control()
 
     @app.on_event("shutdown")
     async def stop_device_polling() -> None:
