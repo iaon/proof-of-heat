@@ -220,6 +220,10 @@ def create_app(config: AppConfig = DEFAULT_CONFIG) -> FastAPI:
     def list_metric_device_types() -> Dict[str, list[str]]:
         return {"device_types": device_poller.list_metric_device_types()}
 
+    @app.get("/api/metrics/catalog")
+    def get_metrics_catalog() -> Dict[str, Dict[str, list[str]]]:
+        return {"catalog": device_poller.get_metric_catalog()}
+
     @app.get("/api/metrics/device-ids")
     def list_metric_device_ids(device_type: str) -> Dict[str, list[str]]:
         if not device_type:

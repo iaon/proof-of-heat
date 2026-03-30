@@ -54,6 +54,7 @@ class DevicePoller:
         self._latest_payloads: dict[DeviceKey, dict[str, Any]] = {}
         self._scheduler: BackgroundScheduler | None = None
         self._db_path = (data_dir / "telemetry.sqlite3") if data_dir else None
+        self._schema_ready = False
 
     def start(self) -> None:
         devices = self._settings.get("devices", {}) if isinstance(self._settings, dict) else {}
@@ -147,7 +148,7 @@ class DevicePoller:
             return []
         with self._db_lock:
             with sqlite3.connect(self._db_path) as conn:
-                self._ensure_tables(conn)
+                self._ensure_schema(conn)
                 rows = conn.execute(
                     "SELECT DISTINCT device_type FROM metrics ORDER BY device_type"
                 ).fetchall()
@@ -158,7 +159,7 @@ class DevicePoller:
             return []
         with self._db_lock:
             with sqlite3.connect(self._db_path) as conn:
-                self._ensure_tables(conn)
+                self._ensure_schema(conn)
                 rows = conn.execute(
                     """
                     SELECT DISTINCT device_id
@@ -175,7 +176,7 @@ class DevicePoller:
             return []
         with self._db_lock:
             with sqlite3.connect(self._db_path) as conn:
-                self._ensure_tables(conn)
+                self._ensure_schema(conn)
                 rows = conn.execute(
                     """
                     SELECT DISTINCT metric
@@ -187,6 +188,27 @@ class DevicePoller:
                     {"device_type": device_type, "device_id": device_id},
                 ).fetchall()
         return [row[0] for row in rows if row and row[0]]
+
+    def get_metric_catalog(self) -> dict[str, dict[str, list[str]]]:
+        if not self._db_path:
+            return {}
+        with self._db_lock:
+            with sqlite3.connect(self._db_path) as conn:
+                self._ensure_schema(conn)
+                rows = conn.execute(
+                    """
+                    SELECT device_type, device_id, metric
+                    FROM metrics
+                    GROUP BY device_type, device_id, metric
+                    ORDER BY device_type, device_id, metric
+                    """
+                ).fetchall()
+        catalog: dict[str, dict[str, list[str]]] = {}
+        for device_type, device_id, metric in rows:
+            if not device_type or not device_id or not metric:
+                continue
+            catalog.setdefault(str(device_type), {}).setdefault(str(device_id), []).append(str(metric))
+        return catalog
 
     def get_metric_series(
         self,
@@ -223,7 +245,7 @@ class DevicePoller:
         """
         with self._db_lock:
             with sqlite3.connect(self._db_path) as conn:
-                self._ensure_tables(conn)
+                self._ensure_schema(conn)
                 rows = conn.execute(query, params).fetchall()
         return [{"ts": int(ts), "value": float(value)} for ts, value in rows]
 
@@ -232,7 +254,7 @@ class DevicePoller:
             return None
         with self._db_lock:
             with sqlite3.connect(self._db_path) as conn:
-                self._ensure_tables(conn)
+                self._ensure_schema(conn)
                 row = conn.execute(
                     """
                     SELECT
@@ -612,7 +634,7 @@ class DevicePoller:
         payload_json = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
         with self._db_lock:
             with sqlite3.connect(self._db_path) as conn:
-                self._ensure_tables(conn)
+                self._ensure_schema(conn)
                 conn.execute(
                     """
                     INSERT INTO raw_events (
@@ -657,7 +679,7 @@ class DevicePoller:
         ]
         with self._db_lock:
             with sqlite3.connect(self._db_path) as conn:
-                self._ensure_tables(conn)
+                self._ensure_schema(conn)
                 conn.executemany(
                     """
                     INSERT INTO metrics (
@@ -853,6 +875,12 @@ class DevicePoller:
             "source": f"{device_type}:{device_id}:{metric}",
         }
 
+    def _ensure_schema(self, conn: sqlite3.Connection) -> None:
+        if self._schema_ready:
+            return
+        self._ensure_tables(conn)
+        self._schema_ready = True
+
     def _ensure_tables(self, conn: sqlite3.Connection) -> None:
         conn.execute(
             """
@@ -906,6 +934,18 @@ class DevicePoller:
             """
             CREATE INDEX IF NOT EXISTS idx_metrics_device_metric_ts
             ON metrics (device_id, metric, ts)
+            """
+        )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_metrics_type_device_id
+            ON metrics (device_type, device_id)
+            """
+        )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_metrics_type_device_metric_ts
+            ON metrics (device_type, device_id, metric, ts)
             """
         )
         self._ensure_columns(

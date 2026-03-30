@@ -15,6 +15,7 @@ const ctx = document.getElementById("chart").getContext("2d");
 let chart;
 let metricRowSeq = 0;
 let deviceTypes = [];
+let metricsCatalog = {};
 const metricRows = [];
 const STORAGE_KEY = "proof_of_heat_metrics_view_v1";
 const palette = ["#2563eb", "#dc2626", "#16a34a", "#7c3aed", "#ea580c", "#0891b2", "#db2777", "#0f766e"];
@@ -196,9 +197,10 @@ function selectMetricForRow(row, value) {
 }
 
 async function loadDeviceTypes() {
-    const res = await fetch(apiUrl("/api/metrics/device-types"));
+    const res = await fetch(apiUrl("/api/metrics/catalog"));
     const data = await res.json();
-    deviceTypes = data.device_types || [];
+    metricsCatalog = data.catalog || {};
+    deviceTypes = Object.keys(metricsCatalog);
     metricRows.forEach((row) => {
         const prevType = row.deviceTypeEl.value;
         setOptions(row.deviceTypeEl, deviceTypes);
@@ -212,10 +214,8 @@ async function loadDeviceIdsForRow(row) {
         setOptions(row.deviceIdEl, []);
         return;
     }
-    const res = await fetch(apiUrl(`/api/metrics/device-ids?device_type=${encodeURIComponent(type)}`));
-    const data = await res.json();
     const prevId = row.deviceIdEl.value;
-    const ids = data.device_ids || [];
+    const ids = Object.keys(metricsCatalog[type] || {});
     setOptions(row.deviceIdEl, ids);
     if (prevId && ids.includes(prevId)) row.deviceIdEl.value = prevId;
 }
@@ -231,10 +231,8 @@ async function loadMetricsForRow(row) {
         updateRowInfo(row);
         return;
     }
-    const res = await fetch(apiUrl(`/api/metrics/metric-names?device_type=${encodeURIComponent(type)}&device_id=${encodeURIComponent(id)}`));
-    const data = await res.json();
     const prevMetric = row.metricValueEl.value;
-    row.options = (data.metrics || []).map((value) => ({
+    row.options = ((metricsCatalog[type] || {})[id] || []).map((value) => ({
         value,
         human: describeMetric(type, value),
     }));

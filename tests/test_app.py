@@ -49,6 +49,7 @@ class DummyController:
 class DummyDevicePoller:
     latest_payloads = {}
     latest_control_inputs = None
+    metric_catalog = {}
 
     def __init__(self, settings_data, data_dir=None):
         self.settings_data = settings_data
@@ -72,6 +73,9 @@ class DummyDevicePoller:
     def list_metric_names(self, device_type, device_id):
         return []
 
+    def get_metric_catalog(self):
+        return self.metric_catalog.copy()
+
     def get_metric_series(self, device_type, device_id, metric, start_ms=None, end_ms=None):
         return []
 
@@ -86,6 +90,7 @@ def build_routes(tmp_path, monkeypatch, parsed_settings=None, latest_payloads=No
     settings = parsed_settings or {"devices": {}}
     DummyDevicePoller.latest_payloads = latest_payloads or {}
     DummyDevicePoller.latest_control_inputs = None
+    DummyDevicePoller.metric_catalog = {}
 
     def save_settings(raw_yaml):
         parsed = yaml.safe_load(raw_yaml) or {}
@@ -261,6 +266,23 @@ def test_control_inputs_api_returns_latest_payload(tmp_path, monkeypatch):
     assert payload["data"] is not None
     assert payload["data"]["indoor_temp"] == 21.5
     assert payload["data"]["power_sources"] == ["whatsminer:1:power"]
+
+
+def test_metrics_catalog_api_returns_catalog(tmp_path, monkeypatch):
+    routes = build_routes(tmp_path, monkeypatch)
+    DummyDevicePoller.metric_catalog = {
+        "open_meteo": {"1001": ["temperature", "windspeed"]},
+        "zont": {"12000": ["room_temp"]},
+    }
+
+    payload = routes["/api/metrics/catalog"]()
+
+    assert payload == {
+        "catalog": {
+            "open_meteo": {"1001": ["temperature", "windspeed"]},
+            "zont": {"12000": ["room_temp"]},
+        }
+    }
 
 
 def test_heating_curve_api_reads_and_writes_section(tmp_path, monkeypatch):

@@ -59,6 +59,11 @@ def test_open_meteo_virtual_device_metrics_are_persisted(monkeypatch, tmp_path):
         "weathercode",
         "windspeed",
     }
+    assert poller.get_metric_catalog()["open_meteo"]["1001"] == [
+        "temperature",
+        "weathercode",
+        "windspeed",
+    ]
 
     points = poller.get_metric_series("open_meteo", "1001", "temperature", None, None)
     assert len(points) == 1
@@ -138,6 +143,10 @@ def test_metrics_table_is_migrated_in_place_for_older_sqlite_files(monkeypatch, 
             row[1]
             for row in conn.execute("PRAGMA table_info(metrics)").fetchall()
         }
+        metric_indexes = {
+            row[1]
+            for row in conn.execute("PRAGMA index_list(metrics)").fetchall()
+        }
         legacy_row = conn.execute(
             """
             SELECT ts, device_type, device_id, metric, value
@@ -154,6 +163,8 @@ def test_metrics_table_is_migrated_in_place_for_older_sqlite_files(monkeypatch, 
         ).fetchone()
 
     assert {"unit", "labels", "component"} <= metric_columns
+    assert "idx_metrics_type_device_id" in metric_indexes
+    assert "idx_metrics_type_device_metric_ts" in metric_indexes
     assert legacy_row == (1, "legacy", "device-1", "temp", 10.0)
     assert new_row == ("temperature", 1.5, "celsius")
 
