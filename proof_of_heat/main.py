@@ -77,6 +77,8 @@ HEATING_CURVE_DEFAULTS: Dict[str, Any] = {
 }
 
 try:  # Lazy import to allow a diagnostic ASGI fallback if dependencies are missing
+    from apscheduler.schedulers.background import BackgroundScheduler
+    from apscheduler.triggers.interval import IntervalTrigger
     from fastapi import FastAPI, HTTPException, Request
     from fastapi.responses import HTMLResponse, JSONResponse
     from fastapi.staticfiles import StaticFiles
@@ -91,6 +93,8 @@ try:  # Lazy import to allow a diagnostic ASGI fallback if dependencies are miss
     from proof_of_heat.services.device_polling import DevicePoller
     from proof_of_heat.services.temperature_control import TemperatureController
 except Exception as exc:  # pragma: no cover - defensive import guard
+    BackgroundScheduler = None  # type: ignore[assignment]
+    IntervalTrigger = None  # type: ignore[assignment]
     FastAPI = None  # type: ignore[assignment]
     HTTPException = Exception  # type: ignore[assignment]
     Request = Any  # type: ignore[assignment]
@@ -99,6 +103,83 @@ except Exception as exc:  # pragma: no cover - defensive import guard
     DEFAULT_CONFIG = AppConfig = human_readable_mode = Whatsminer = TemperatureController = None  # type: ignore[assignment]
     load_settings_yaml = parse_settings_yaml = save_settings_yaml = None  # type: ignore[assignment]
     _startup_error = exc
+
+
+def _extract_whatsminer_summary(response: Any) -> dict[str, Any] | None:
+    if not isinstance(response, dict):
+        return None
+    payload = response.get("msg")
+    if not isinstance(payload, dict):
+        payload = response.get("Msg")
+    if not isinstance(payload, dict):
+        payload = response.get("message")
+    if not isinstance(payload, dict):
+        return None
+    summary = payload.get("summary")
+    return summary if isinstance(summary, dict) else None
+
+
+def _safe_int(value: Any) -> int | None:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _resolve_control_interval_seconds(settings_data: Dict[str, Any]) -> int:
+    if not isinstance(settings_data, dict):
+        return 30
+    devices = settings_data.get("devices")
+    if not isinstance(devices, dict):
+        return 30
+    try:
+        interval = int(devices.get("refresh_interval", 30) or 30)
+    except (TypeError, ValueError):
+        interval = 30
+    return max(1, interval)
+
+
+def _apply_fixed_power_heating_mode(miner: Any, settings_data: Dict[str, Any]) -> Dict[str, Any] | None:
+    if not isinstance(settings_data, dict):
+        return None
+    heating_mode = settings_data.get("heating_mode")
+    if not isinstance(heating_mode, dict):
+        return None
+    if heating_mode.get("enabled", True) is False:
+        return None
+    if heating_mode.get("type") != "fixed_power":
+        return None
+    params = heating_mode.get("params")
+    if not isinstance(params, dict):
+        return None
+
+    target_power = _safe_int(params.get("power_w"))
+    if target_power is None:
+        return None
+
+    summary = _extract_whatsminer_summary(miner.fetch_status())
+    if summary is None:
+        return None
+
+    up_freq_finish = _safe_int(summary.get("up-freq-finish"))
+    current_power_limit = _safe_int(summary.get("power-limit"))
+    if up_freq_finish != 1 or current_power_limit is None or current_power_limit == target_power:
+        return None
+
+    logger.info(
+        "Fixed power mode updating miner power limit from %sW to %sW",
+        current_power_limit,
+        target_power,
+    )
+    return miner.set_power_limit(target_power)
+
+
+def _run_heating_mode_control(miner: Any) -> None:
+    try:
+        settings_data = parse_settings_yaml(load_settings_yaml())
+        _apply_fixed_power_heating_mode(miner, settings_data)
+    except Exception:  # pragma: no cover - defensive logging
+        logger.exception("Heating mode control iteration failed")
 
 
 def create_app(config: AppConfig = DEFAULT_CONFIG) -> FastAPI:
@@ -126,6 +207,7 @@ def create_app(config: AppConfig = DEFAULT_CONFIG) -> FastAPI:
     settings_data = parse_settings_yaml(load_settings_yaml())
     device_poller = DevicePoller(settings_data, data_dir=config.data_dir)
     app.state.device_poller = device_poller
+    control_scheduler: BackgroundScheduler | None = None
 
     @app.get("/health")
     def health() -> Dict[str, str]:
@@ -138,11 +220,24 @@ def create_app(config: AppConfig = DEFAULT_CONFIG) -> FastAPI:
 
     @app.on_event("startup")
     async def start_device_polling() -> None:
+        nonlocal control_scheduler
         device_poller.start()
+        control_scheduler = BackgroundScheduler()
+        control_scheduler.add_job(
+            _run_heating_mode_control,
+            trigger=IntervalTrigger(seconds=_resolve_control_interval_seconds(settings_data)),
+            id="heating-mode-control",
+            args=[miner],
+            replace_existing=True,
+        )
+        control_scheduler.start()
+        _run_heating_mode_control(miner)
 
     @app.on_event("shutdown")
     async def stop_device_polling() -> None:
         device_poller.shutdown()
+        if control_scheduler:
+            control_scheduler.shutdown(wait=False)
 
     @app.get("/debug/routes")
     def debug_routes() -> Dict[str, Any]:
@@ -190,11 +285,18 @@ def create_app(config: AppConfig = DEFAULT_CONFIG) -> FastAPI:
     @app.post("/api/config")
     @app.post("/api/config/")
     def update_config(payload: Dict[str, Any]) -> Dict[str, Any]:
+        nonlocal settings_data
         raw_yaml = payload.get("raw_yaml")
         if not isinstance(raw_yaml, str):
             raise HTTPException(status_code=400, detail="raw_yaml must be a string")
         parsed = save_settings_yaml(raw_yaml)
+        settings_data = parsed
         device_poller.update_settings(parsed)
+        if control_scheduler:
+            control_scheduler.reschedule_job(
+                "heating-mode-control",
+                trigger=IntervalTrigger(seconds=_resolve_control_interval_seconds(parsed)),
+            )
         return {"parsed": parsed}
 
     @app.get("/api/heating-curve")

@@ -10,13 +10,17 @@ from proof_of_heat.config import AppConfig
 
 
 class DummyMiner:
+    fetch_status_response = {"power": 1000, "fan_speed": 60}
+    set_power_limit_calls = []
+
     def __init__(self, *args, **kwargs):
         self.name = "dummy"
 
     def fetch_status(self):
-        return {"power": 1000, "fan_speed": 60}
+        return self.fetch_status_response
 
     def set_power_limit(self, watts: int):
+        self.set_power_limit_calls.append(watts)
         return {"power_limit": watts}
 
     def start(self):
@@ -91,6 +95,8 @@ def build_routes(tmp_path, monkeypatch, parsed_settings=None, latest_payloads=No
     DummyDevicePoller.latest_payloads = latest_payloads or {}
     DummyDevicePoller.latest_control_inputs = None
     DummyDevicePoller.metric_catalog = {}
+    DummyMiner.fetch_status_response = {"power": 1000, "fan_speed": 60}
+    DummyMiner.set_power_limit_calls = []
 
     def save_settings(raw_yaml):
         parsed = yaml.safe_load(raw_yaml) or {}
@@ -283,6 +289,62 @@ def test_metrics_catalog_api_returns_catalog(tmp_path, monkeypatch):
             "zont": {"12000": ["room_temp"]},
         }
     }
+
+
+def test_fixed_power_mode_sets_power_limit_when_summary_is_ready():
+    DummyMiner.fetch_status_response = {
+        "code": 0,
+        "msg": {
+            "summary": {
+                "power-limit": 3600,
+                "up-freq-finish": 1,
+            }
+        },
+    }
+    DummyMiner.set_power_limit_calls = []
+    miner = DummyMiner()
+
+    result = main._apply_fixed_power_heating_mode(
+        miner,
+        {
+            "heating_mode": {
+                "enabled": True,
+                "type": "fixed_power",
+                "params": {"power_w": 3200},
+            }
+        },
+    )
+
+    assert result == {"power_limit": 3200}
+    assert DummyMiner.set_power_limit_calls == [3200]
+
+
+def test_fixed_power_mode_waits_until_up_freq_finish():
+    DummyMiner.fetch_status_response = {
+        "code": 0,
+        "msg": {
+            "summary": {
+                "power-limit": 3600,
+                "up-freq-finish": 0,
+            }
+        },
+    }
+    DummyMiner.set_power_limit_calls = []
+    miner = DummyMiner()
+
+    result = main._apply_fixed_power_heating_mode(
+        miner,
+        {
+            "heating_mode": {
+                "enabled": True,
+                "type": "fixed_power",
+                "params": {"power_w": 3200},
+            }
+        },
+    )
+
+    assert result is None
+    assert DummyMiner.set_power_limit_calls == []
 
 
 def test_heating_curve_api_reads_and_writes_section(tmp_path, monkeypatch):
