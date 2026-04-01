@@ -1,0 +1,45 @@
+.preset-row {
+    align-items: flex-start;
+    margin-bottom: 12px;
+}
+
+.preset-actions {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+.preset-btn {
+    background: #0f766e;
+    font-size: 13px;
+}
+
+.preset-btn:hover {
+    background: #115e59;
+}
+
+.economics-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: 12px;
+}
+
+.economics-stat {
+    border: 1px solid #dbe4ee;
+    border-radius: 8px;
+    padding: 12px;
+    background: #f8fafc;
+}
+
+.economics-stat-label {
+    font-size: 13px;
+    color: #475569;
+    margin-bottom: 6px;
+}
+
+.economics-stat-value {
+    font-size: 22px;
+    font-weight: 700;
+    color: #0f172a;
+    word-break: break-word;
+}

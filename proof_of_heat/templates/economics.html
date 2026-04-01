@@ -3,16 +3,35 @@
 <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Metrics chart</title>
+    <title>Economics</title>
     <link rel="stylesheet" href="__ROOT_PATH__/static/css/app.css?v=__STATIC_VERSION__" />
     <link rel="stylesheet" href="__ROOT_PATH__/static/css/metrics.css?v=__STATIC_VERSION__" />
+    <link rel="stylesheet" href="__ROOT_PATH__/static/css/economics.css?v=__STATIC_VERSION__" />
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 </head>
 <body>
-    <h1>Metrics chart</h1>
-    <p class="muted">Select one or more series (device type + device id + metric) to plot history.</p>
+    <h1>Economics</h1>
+    <p class="muted">Current market values and economics history for mining profitability.</p>
 
     <div class="card">
+        <div class="row" style="margin-bottom:12px;">
+            <strong>Current values</strong>
+            <button id="refresh-current" type="button">Refresh</button>
+        </div>
+        <div id="economics-current" class="economics-grid"></div>
+        <p id="economics-current-meta" class="muted"></p>
+        <p id="economics-current-errors" class="muted"></p>
+    </div>
+
+    <div class="card">
+        <div class="row preset-row">
+            <label>Presets</label>
+            <div class="preset-actions">
+                <button type="button" class="preset-btn" data-preset="rates">Rates</button>
+                <button type="button" class="preset-btn" data-preset="profitability">Profitability</button>
+                <button type="button" class="preset-btn" data-preset="market">Market inputs</button>
+            </div>
+        </div>
         <div class="row" style="margin-bottom:12px;">
             <label for="metric-rows">Series</label>
             <div class="metric-rows" id="metric-rows"></div>
@@ -42,6 +61,6 @@
     <script>
         const rootPath = __ROOT_PATH_JSON__;
     </script>
-    <script src="__ROOT_PATH__/static/js/metrics.js?v=__STATIC_VERSION__"></script>
+    <script src="__ROOT_PATH__/static/js/economics.js?v=__STATIC_VERSION__"></script>
 </body>
 </html>

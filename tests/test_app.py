@@ -171,6 +171,7 @@ def test_ui_respects_root_path(tmp_path, monkeypatch):
     assert ui_resp.status_code == 200
     ui_markup = ui_resp.body.decode()
     assert 'href="/app/config"' in ui_markup
+    assert 'href="/app/economics"' in ui_markup
     assert 'href="/app/metrics"' in ui_markup
     assert 'href="/app/heating-curve"' in ui_markup
     assert 'id="control-inputs"' in ui_markup
@@ -184,8 +185,14 @@ def test_ui_respects_root_path(tmp_path, monkeypatch):
     assert metrics_resp.status_code == 200
     metrics_markup = metrics_resp.body.decode()
     assert 'const rootPath = "/app";' in metrics_markup
-    assert 'data-preset="economics-rates"' in metrics_markup
-    assert 'data-preset="economics-profitability"' in metrics_markup
+    assert 'data-preset="economics-rates"' not in metrics_markup
+
+    economics_resp = routes["/economics"](make_request("/economics", root_path="/app"))
+    assert economics_resp.status_code == 200
+    economics_markup = economics_resp.body.decode()
+    assert 'const rootPath = "/app";' in economics_markup
+    assert 'data-preset="rates"' in economics_markup
+    assert 'id="economics-current"' in economics_markup
 
 
 def test_status_snapshot(tmp_path, monkeypatch):
@@ -289,6 +296,7 @@ def test_metrics_catalog_api_returns_catalog(tmp_path, monkeypatch):
     DummyDevicePoller.metric_catalog = {
         "open_meteo": {"1001": ["temperature", "windspeed"]},
         "zont": {"12000": ["room_temp"]},
+        "economics": {"market": ["exchange_rate_btc_rub"]},
     }
 
     payload = routes["/api/metrics/catalog"]()
@@ -298,6 +306,48 @@ def test_metrics_catalog_api_returns_catalog(tmp_path, monkeypatch):
             "open_meteo": {"1001": ["temperature", "windspeed"]},
             "zont": {"12000": ["room_temp"]},
         }
+    }
+
+
+def test_economics_api_returns_latest_payload_and_catalog(tmp_path, monkeypatch):
+    routes = build_routes(tmp_path, monkeypatch)
+    DummyDevicePoller.latest_payloads = {
+        "economics:market": {
+            "timestamp": "2026-04-01T10:00:00+00:00",
+            "payload": {
+                "derived": {
+                    "exchange_rate_btc_rub": 8000000,
+                    "hashprice_btc_th_day": 0.0000015,
+                },
+                "errors": [],
+            },
+        }
+    }
+    DummyDevicePoller.metric_catalog = {
+        "economics": {
+            "market": [
+                "exchange_rate_btc_rub",
+                "hashprice_btc_th_day",
+            ]
+        }
+    }
+
+    current_payload = routes["/api/economics/current"]()
+    catalog_payload = routes["/api/economics/catalog"]()
+
+    assert current_payload == {
+        "data": {
+            "exchange_rate_btc_rub": 8000000,
+            "hashprice_btc_th_day": 0.0000015,
+        },
+        "errors": [],
+        "polled_at": "2026-04-01T10:00:00+00:00",
+    }
+    assert catalog_payload == {
+        "metrics": [
+            "exchange_rate_btc_rub",
+            "hashprice_btc_th_day",
+        ]
     }
 
 

@@ -1,4 +1,8 @@
 const apiUrl = (path) => `${rootPath}${path}`;
+const currentEl = document.getElementById("economics-current");
+const currentMetaEl = document.getElementById("economics-current-meta");
+const currentErrorsEl = document.getElementById("economics-current-errors");
+const refreshCurrentBtn = document.getElementById("refresh-current");
 const metricRowsEl = document.getElementById("metric-rows");
 const addMetricBtn = document.getElementById("add-metric");
 const startDateEl = document.getElementById("start-date");
@@ -12,36 +16,118 @@ const endSecondEl = document.getElementById("end-second");
 const resetRangeBtn = document.getElementById("reset-range");
 const emptyEl = document.getElementById("empty");
 const ctx = document.getElementById("chart").getContext("2d");
+const presetButtons = Array.from(document.querySelectorAll(".preset-btn"));
+const STORAGE_KEY = "proof_of_heat_economics_view_v1";
+const palette = ["#2563eb", "#dc2626", "#16a34a", "#7c3aed", "#ea580c", "#0891b2", "#db2777", "#0f766e"];
+const METRIC_PRESETS = {
+    rates: [
+        "exchange_rate_btc_usd",
+        "exchange_rate_usd_rub",
+        "exchange_rate_btc_rub",
+    ],
+    profitability: [
+        "hashprice_btc_th_day",
+        "hashprice_rub_th_day",
+        "hashcost_btc_th_day",
+        "hashcost_rub_th_day",
+    ],
+    market: [
+        "network_hashrate_th_s",
+        "avg_block_reward_btc",
+        "electricity_price_rub_kwh",
+    ],
+};
+const KNOWN_METRICS = [
+    "exchange_rate_btc_usd",
+    "exchange_rate_usd_rub",
+    "exchange_rate_btc_rub",
+    "network_hashrate_th_s",
+    "avg_block_reward_btc",
+    "hashprice_btc_th_day",
+    "hashprice_rub_th_day",
+    "electricity_price_rub_kwh",
+    "hashcost_rub_th_day",
+    "hashcost_btc_th_day",
+];
+const CURRENT_METRICS_ORDER = [
+    "exchange_rate_btc_usd",
+    "exchange_rate_usd_rub",
+    "exchange_rate_btc_rub",
+    "network_hashrate_th_s",
+    "avg_block_reward_btc",
+    "hashprice_btc_th_day",
+    "hashprice_rub_th_day",
+    "electricity_price_rub_kwh",
+    "hashcost_rub_th_day",
+    "hashcost_btc_th_day",
+];
+
 let chart;
 let metricRowSeq = 0;
-let deviceTypes = [];
-let metricsCatalog = {};
+let availableMetrics = [...KNOWN_METRICS];
 const metricRows = [];
-const STORAGE_KEY = "proof_of_heat_metrics_view_v2";
-const palette = ["#2563eb", "#dc2626", "#16a34a", "#7c3aed", "#ea580c", "#0891b2", "#db2777", "#0f766e"];
 
-function setOptions(select, options) {
-    select.innerHTML = "";
-    const placeholder = document.createElement("option");
-    placeholder.value = "";
-    placeholder.textContent = "—";
-    select.appendChild(placeholder);
-    options.forEach((item) => {
-        const opt = document.createElement("option");
-        opt.value = item;
-        opt.textContent = item;
-        select.appendChild(opt);
-    });
+function prettifyMetricName(name) {
+    return name.replaceAll("_", " ");
 }
 
-function toDateInputValue(date) {
-    const pad = (num) => String(num).padStart(2, "0");
-    return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+function describeEconomicsMetric(metricName) {
+    const labels = {
+        exchange_rate_btc_usd: "BTC price in USD",
+        exchange_rate_usd_rub: "USD to RUB exchange rate",
+        exchange_rate_btc_rub: "BTC price in RUB",
+        network_hashrate_th_s: "Network hashrate in TH/s",
+        avg_block_reward_btc: "Average block reward in BTC",
+        hashprice_btc_th_day: "Hashprice in BTC per TH per day",
+        hashprice_rub_th_day: "Hashprice in RUB per TH per day",
+        electricity_price_rub_kwh: "Electricity price in RUB per kWh",
+        hashcost_rub_th_day: "Electricity cost in RUB per TH per day",
+        hashcost_btc_th_day: "Electricity cost in BTC per TH per day",
+    };
+    return labels[metricName] || prettifyMetricName(metricName);
 }
 
-function toTimeParts(date) {
+function formatCurrentMetricValue(metricName, value) {
+    if (value === null || value === undefined) return "—";
+    const num = Number(value);
+    if (Number.isNaN(num)) return String(value);
+    if (metricName === "network_hashrate_th_s") {
+        return new Intl.NumberFormat("ru-RU", { maximumFractionDigits: 0 }).format(num);
+    }
+    if (Math.abs(num) >= 1000) {
+        return new Intl.NumberFormat("ru-RU", { maximumFractionDigits: 2 }).format(num);
+    }
+    if (Math.abs(num) >= 1) {
+        return new Intl.NumberFormat("ru-RU", { maximumFractionDigits: 6 }).format(num);
+    }
+    return new Intl.NumberFormat("ru-RU", { maximumFractionDigits: 12 }).format(num);
+}
+
+function formatDateTime(value) {
+    return new Intl.DateTimeFormat("ru-RU", {
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit",
+        hour12: false,
+    }).format(new Date(value));
+}
+
+function setRangeToLast24Hours() {
+    const now = new Date();
+    const yesterday = new Date(now.getTime() - 24 * 60 * 60 * 1000);
     const pad = (num) => String(num).padStart(2, "0");
-    return { hour: pad(date.getHours()), minute: pad(date.getMinutes()), second: pad(date.getSeconds()) };
+    const toDateValue = (date) => `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+    startDateEl.value = toDateValue(yesterday);
+    endDateEl.value = toDateValue(now);
+    startHourEl.value = pad(yesterday.getHours());
+    startMinuteEl.value = pad(yesterday.getMinutes());
+    startSecondEl.value = pad(yesterday.getSeconds());
+    endHourEl.value = pad(now.getHours());
+    endMinuteEl.value = pad(now.getMinutes());
+    endSecondEl.value = pad(now.getSeconds());
 }
 
 function parseDateTimeInput(dateValue, hourValue, minuteValue, secondValue) {
@@ -65,50 +151,21 @@ function toIsoWithOffset(dateValue, hourValue, minuteValue, secondValue) {
     return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}${sign}${offsetHours}:${offsetMinutes}`;
 }
 
-function formatDateTime(value) {
-    return new Intl.DateTimeFormat("ru-RU", {
-        year: "numeric",
-        month: "2-digit",
-        day: "2-digit",
-        hour: "2-digit",
-        minute: "2-digit",
-        second: "2-digit",
-        hour12: false,
-    }).format(new Date(value));
-}
-
 function parseLocalInputToMs(dateValue, hourValue, minuteValue, secondValue) {
     const date = parseDateTimeInput(dateValue, hourValue, minuteValue, secondValue);
     return date ? date.getTime() : null;
 }
 
-function applyLast24HoursRange() {
-    const now = new Date();
-    const yesterday = new Date(now.getTime() - 24 * 60 * 60 * 1000);
-    startDateEl.value = toDateInputValue(yesterday);
-    endDateEl.value = toDateInputValue(now);
-    const startParts = toTimeParts(yesterday);
-    const endParts = toTimeParts(now);
-    startHourEl.value = startParts.hour;
-    startMinuteEl.value = startParts.minute;
-    startSecondEl.value = startParts.second;
-    endHourEl.value = endParts.hour;
-    endMinuteEl.value = endParts.minute;
-    endSecondEl.value = endParts.second;
-}
-
 function persistState() {
     const payload = {
         series: metricRows.map((row) => ({
-            device_type: row.deviceTypeEl.value || "",
-            device_id: row.deviceIdEl.value || "",
             metric: row.metricValueEl.value || "",
         })),
     };
     try {
         localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
     } catch (err) {
-        // Ignore storage failures (private mode/quota).
+        // Ignore storage failures.
     }
 }
 
@@ -124,36 +181,15 @@ function loadState() {
     }
 }
 
-function prettifyMetricName(name) {
-    return name.replaceAll("_", " ");
-}
-
-function describeZontMetric(metricName) {
-    let match = metricName.match(/^io_thermometers_state_([a-zA-Z0-9]+)_last_value$/);
-    if (match) return `Thermometer ${match[1].slice(0, 8)}: temperature`;
-    match = metricName.match(/^io_thermometers_state_([a-zA-Z0-9]+)_last_value_time$/);
-    if (match) return `Thermometer ${match[1].slice(0, 8)}: last value time (epoch seconds)`;
-    match = metricName.match(/^io_last_boiler_state_(.+)$/);
-    if (match) return `Boiler state: ${prettifyMetricName(match[1])}`;
-    if (metricName.startsWith("io_")) return `I/O metric: ${prettifyMetricName(metricName.slice(3))}`;
-    return `ZONT metric: ${prettifyMetricName(metricName)}`;
-}
-
-function describeMetric(deviceType, metricName) {
-    if (!metricName) return "—";
-    if (deviceType === "zont") return describeZontMetric(metricName);
-    return prettifyMetricName(metricName);
+function closeAllMetricDropdowns(exceptRowId = null) {
+    metricRows.forEach((row) => {
+        if (row.id !== exceptRowId) row.dropdownEl.hidden = true;
+    });
 }
 
 function updateRemoveButtons() {
     metricRows.forEach((row) => {
         row.removeBtn.hidden = metricRows.length <= 1;
-    });
-}
-
-function closeAllMetricDropdowns(exceptRowId = null) {
-    metricRows.forEach((row) => {
-        if (row.id !== exceptRowId) row.dropdownEl.hidden = true;
     });
 }
 
@@ -179,12 +215,20 @@ function renderRowDropdown(row, filterValue = "") {
 function updateRowInfo(row) {
     const metricName = row.metricValueEl.value || "";
     row.fullNameEl.textContent = metricName || "—";
-    row.humanEl.textContent = describeMetric(row.deviceTypeEl.value, metricName);
+    row.humanEl.textContent = describeEconomicsMetric(metricName);
 }
 
-function selectMetricForRow(row, value) {
+function selectMetricForRow(row, value, options = {}) {
+    const { force = false } = options;
     const selected = row.options.find((item) => item.value === value);
     if (!selected) {
+        if (force && value) {
+            row.metricValueEl.value = value;
+            row.searchEl.value = value;
+            updateRowInfo(row);
+            renderRowDropdown(row, row.searchEl.value);
+            return;
+        }
         row.metricValueEl.value = "";
         row.searchEl.value = "";
         updateRowInfo(row);
@@ -196,45 +240,11 @@ function selectMetricForRow(row, value) {
     renderRowDropdown(row, row.searchEl.value);
 }
 
-async function loadDeviceTypes() {
-    const res = await fetch(apiUrl("/api/metrics/catalog"));
-    const data = await res.json();
-    metricsCatalog = data.catalog || {};
-    deviceTypes = Object.keys(metricsCatalog);
-    metricRows.forEach((row) => {
-        const prevType = row.deviceTypeEl.value;
-        setOptions(row.deviceTypeEl, deviceTypes);
-        if (prevType && deviceTypes.includes(prevType)) row.deviceTypeEl.value = prevType;
-    });
-}
-
-async function loadDeviceIdsForRow(row) {
-    const type = row.deviceTypeEl.value;
-    if (!type) {
-        setOptions(row.deviceIdEl, []);
-        return;
-    }
-    const prevId = row.deviceIdEl.value;
-    const ids = Object.keys(metricsCatalog[type] || {});
-    setOptions(row.deviceIdEl, ids);
-    if (prevId && ids.includes(prevId)) row.deviceIdEl.value = prevId;
-}
-
-async function loadMetricsForRow(row) {
-    const type = row.deviceTypeEl.value;
-    const id = row.deviceIdEl.value;
-    if (!type || !id) {
-        row.options = [];
-        row.metricValueEl.value = "";
-        row.searchEl.value = "";
-        renderRowDropdown(row, "");
-        updateRowInfo(row);
-        return;
-    }
+function loadMetricsForRow(row) {
     const prevMetric = row.metricValueEl.value;
-    row.options = ((metricsCatalog[type] || {})[id] || []).map((value) => ({
+    row.options = availableMetrics.map((value) => ({
         value,
-        human: describeMetric(type, value),
+        human: describeEconomicsMetric(value),
     }));
     if (prevMetric && row.options.some((item) => item.value === prevMetric)) {
         selectMetricForRow(row, prevMetric);
@@ -249,12 +259,10 @@ async function loadMetricsForRow(row) {
 function collectSelectedSeries() {
     return metricRows
         .map((row) => ({
-            deviceType: row.deviceTypeEl.value,
-            deviceId: row.deviceIdEl.value,
             metric: row.metricValueEl.value,
             label: row.searchEl.value || row.metricValueEl.value,
         }))
-        .filter((item) => Boolean(item.deviceType && item.deviceId && item.metric));
+        .filter((item) => Boolean(item.metric));
 }
 
 function createMetricRow(initialState = null) {
@@ -264,12 +272,8 @@ function createMetricRow(initialState = null) {
     rowEl.className = "metric-row";
     rowEl.innerHTML = `
         <div class="metric-row-head">
-            <label for="device-type-${rowId}">Device type</label>
-            <select id="device-type-${rowId}"></select>
-            <label for="device-id-${rowId}">Device id</label>
-            <select id="device-id-${rowId}"></select>
             <div class="metric-picker">
-                <input id="metric-search-${rowId}" type="text" autocomplete="off" placeholder="Select or search metric..." />
+                <input id="metric-search-${rowId}" type="text" autocomplete="off" placeholder="Select or search economics metric..." />
                 <input id="metric-value-${rowId}" type="hidden" />
                 <div id="metric-dropdown-${rowId}" class="metric-dropdown" hidden></div>
             </div>
@@ -285,8 +289,6 @@ function createMetricRow(initialState = null) {
     const row = {
         id: rowId,
         rowEl,
-        deviceTypeEl: rowEl.querySelector(`#device-type-${rowId}`),
-        deviceIdEl: rowEl.querySelector(`#device-id-${rowId}`),
         searchEl: rowEl.querySelector(`#metric-search-${rowId}`),
         metricValueEl: rowEl.querySelector(`#metric-value-${rowId}`),
         dropdownEl: rowEl.querySelector(`#metric-dropdown-${rowId}`),
@@ -294,23 +296,11 @@ function createMetricRow(initialState = null) {
         fullNameEl: rowEl.querySelector(`#metric-full-name-${rowId}`),
         humanEl: rowEl.querySelector(`#metric-human-${rowId}`),
         options: [],
+        initialState,
     };
     metricRows.push(row);
-    setOptions(row.deviceTypeEl, deviceTypes);
-    setOptions(row.deviceIdEl, []);
-    row.initialState = initialState;
+    loadMetricsForRow(row);
 
-    row.deviceTypeEl.addEventListener("change", async () => {
-        await loadDeviceIdsForRow(row);
-        await loadMetricsForRow(row);
-        persistState();
-        loadChart();
-    });
-    row.deviceIdEl.addEventListener("change", async () => {
-        await loadMetricsForRow(row);
-        persistState();
-        loadChart();
-    });
     row.searchEl.addEventListener("focus", () => {
         closeAllMetricDropdowns(row.id);
         renderRowDropdown(row, row.searchEl.value);
@@ -351,6 +341,47 @@ function createMetricRow(initialState = null) {
     return row;
 }
 
+function clearMetricRows() {
+    metricRows.splice(0, metricRows.length);
+    metricRowsEl.innerHTML = "";
+    updateRemoveButtons();
+}
+
+function renderCurrentValues(data, polledAt, errors) {
+    currentEl.innerHTML = "";
+    currentMetaEl.textContent = polledAt ? `Last update: ${polledAt}` : "";
+    currentErrorsEl.textContent = Array.isArray(errors) && errors.length ? `Warnings: ${errors.join(" | ")}` : "";
+
+    if (!data || typeof data !== "object") {
+        currentMetaEl.textContent = "";
+        currentErrorsEl.textContent = "";
+        currentEl.innerHTML = '<p class="muted">No economics data yet.</p>';
+        return;
+    }
+
+    const fields = CURRENT_METRICS_ORDER.filter((key) => data[key] !== undefined && data[key] !== null);
+    if (!fields.length) {
+        currentEl.innerHTML = '<p class="muted">No economics values available yet.</p>';
+        return;
+    }
+
+    fields.forEach((metricName) => {
+        const item = document.createElement("div");
+        item.className = "economics-stat";
+        item.innerHTML = `
+            <div class="economics-stat-label">${describeEconomicsMetric(metricName)}</div>
+            <div class="economics-stat-value">${formatCurrentMetricValue(metricName, data[metricName])}</div>
+        `;
+        currentEl.appendChild(item);
+    });
+}
+
+async function loadCurrentValues() {
+    const res = await fetch(apiUrl("/api/economics/current"));
+    const payload = await res.json();
+    renderCurrentValues(payload.data, payload.polled_at, payload.errors);
+}
+
 async function loadChart() {
     const selectedSeries = collectSelectedSeries();
     if (!selectedSeries.length) {
@@ -374,17 +405,13 @@ async function loadChart() {
     const endMs = parseLocalInputToMs(endDate, endHour, endMinute, endSecond);
 
     const requests = selectedSeries.map(async (seriesItem) => {
-        const params = new URLSearchParams({
-            device_type: seriesItem.deviceType,
-            device_id: seriesItem.deviceId,
-            metric: seriesItem.metric,
-        });
+        const params = new URLSearchParams({ metric: seriesItem.metric });
         if (startDate) params.set("start", toIsoWithOffset(startDate, startHour, startMinute, startSecond));
         if (endDate) params.set("end", toIsoWithOffset(endDate, endHour, endMinute, endSecond));
-        const res = await fetch(apiUrl(`/api/metrics/data?${params.toString()}`));
+        const res = await fetch(apiUrl(`/api/economics/data?${params.toString()}`));
         const data = await res.json();
         return {
-            label: `${seriesItem.deviceType} ${seriesItem.deviceId} · ${seriesItem.label}`,
+            label: seriesItem.label,
             points: data.points || [],
         };
     });
@@ -441,52 +468,74 @@ async function loadChart() {
     });
 }
 
+async function loadCatalog() {
+    const res = await fetch(apiUrl("/api/economics/catalog"));
+    const payload = await res.json();
+    const fetched = Array.isArray(payload.metrics) ? payload.metrics : [];
+    availableMetrics = Array.from(new Set([...KNOWN_METRICS, ...fetched]));
+    metricRows.forEach((row) => loadMetricsForRow(row));
+}
+
+async function applyPreset(name) {
+    const metrics = METRIC_PRESETS[name];
+    if (!Array.isArray(metrics) || !metrics.length) return;
+    clearMetricRows();
+    metrics.forEach((metric) => createMetricRow({ metric }));
+    await restoreRowsFromState();
+    persistState();
+    loadChart();
+}
+
+async function restoreRowsFromState() {
+    for (const row of metricRows) {
+        const initial = row.initialState || {};
+        loadMetricsForRow(row);
+        if (initial.metric) {
+            selectMetricForRow(row, initial.metric, { force: true });
+        }
+    }
+}
+
 document.addEventListener("click", (event) => {
     const clickedInsideAnyRow = metricRows.some((row) => row.rowEl.contains(event.target));
     if (!clickedInsideAnyRow) closeAllMetricDropdowns();
 });
+
 addMetricBtn.addEventListener("click", () => {
     createMetricRow();
     persistState();
 });
+
 document.getElementById("apply").addEventListener("click", () => {
     persistState();
     loadChart();
 });
+
 resetRangeBtn.addEventListener("click", () => {
-    applyLast24HoursRange();
+    setRangeToLast24Hours();
     loadChart();
 });
 
+refreshCurrentBtn.addEventListener("click", () => {
+    loadCurrentValues();
+});
+
+presetButtons.forEach((button) => {
+    button.addEventListener("click", () => {
+        const presetName = button.getAttribute("data-preset");
+        applyPreset(presetName);
+    });
+});
+
 const savedState = loadState();
-applyLast24HoursRange();
+setRangeToLast24Hours();
 
 const initialSeries = Array.isArray(savedState && savedState.series) && savedState.series.length
     ? savedState.series
     : [{}];
 initialSeries.forEach((series) => createMetricRow(series));
 
-async function restoreRowsFromState() {
-    for (const row of metricRows) {
-        const initial = row.initialState || {};
-        if (initial.device_type && deviceTypes.includes(initial.device_type)) {
-            row.deviceTypeEl.value = initial.device_type;
-            await loadDeviceIdsForRow(row);
-        }
-        if (initial.device_id) {
-            const idOptions = Array.from(row.deviceIdEl.options).map((opt) => opt.value);
-            if (idOptions.includes(initial.device_id)) {
-                row.deviceIdEl.value = initial.device_id;
-            }
-        }
-        await loadMetricsForRow(row);
-        if (initial.metric) {
-            selectMetricForRow(row, initial.metric);
-        }
-    }
-}
-
-loadDeviceTypes().then(async () => {
+Promise.all([loadCatalog(), loadCurrentValues()]).then(async () => {
     await restoreRowsFromState();
     persistState();
     loadChart();

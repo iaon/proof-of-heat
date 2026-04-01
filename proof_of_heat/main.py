@@ -320,6 +320,7 @@ def create_app(config: AppConfig = DEFAULT_CONFIG) -> FastAPI:
 
     ui_markup = load_template("ui.html")
     metrics_markup = load_template("metrics.html")
+    economics_markup = load_template("economics.html")
     heating_curve_markup = load_template("heating_curve.html")
 
     @app.get("/", response_class=HTMLResponse, include_in_schema=False)
@@ -336,6 +337,11 @@ def create_app(config: AppConfig = DEFAULT_CONFIG) -> FastAPI:
     @app.get("/metrics/", response_class=HTMLResponse, include_in_schema=False)
     def metrics_view(request: Request) -> HTMLResponse:
         return HTMLResponse(render_markup(metrics_markup, request))
+
+    @app.get("/economics", response_class=HTMLResponse, include_in_schema=False)
+    @app.get("/economics/", response_class=HTMLResponse, include_in_schema=False)
+    def economics_view(request: Request) -> HTMLResponse:
+        return HTMLResponse(render_markup(economics_markup, request))
 
     @app.get("/heating-curve", response_class=HTMLResponse, include_in_schema=False)
     @app.get("/heating-curve/", response_class=HTMLResponse, include_in_schema=False)
@@ -387,11 +393,19 @@ def create_app(config: AppConfig = DEFAULT_CONFIG) -> FastAPI:
 
     @app.get("/api/metrics/device-types")
     def list_metric_device_types() -> Dict[str, list[str]]:
-        return {"device_types": device_poller.list_metric_device_types()}
+        return {
+            "device_types": [
+                device_type
+                for device_type in device_poller.list_metric_device_types()
+                if device_type != "economics"
+            ]
+        }
 
     @app.get("/api/metrics/catalog")
     def get_metrics_catalog() -> Dict[str, Dict[str, Dict[str, list[str]]]]:
-        return {"catalog": device_poller.get_metric_catalog()}
+        catalog = device_poller.get_metric_catalog()
+        catalog.pop("economics", None)
+        return {"catalog": catalog}
 
     @app.get("/api/metrics/device-ids")
     def list_metric_device_ids(device_type: str) -> Dict[str, list[str]]:
@@ -430,6 +444,51 @@ def create_app(config: AppConfig = DEFAULT_CONFIG) -> FastAPI:
     @app.get("/api/control-inputs/latest/")
     def get_latest_control_inputs() -> Dict[str, Any]:
         return {"data": device_poller.get_latest_control_inputs()}
+
+    @app.get("/api/economics/current")
+    @app.get("/api/economics/current/")
+    def get_latest_economics() -> Dict[str, Any]:
+        latest_payload = device_poller.get_latest_payloads().get("economics:market")
+        if not isinstance(latest_payload, dict):
+            return {"data": None, "errors": [], "polled_at": None}
+        payload = latest_payload.get("payload")
+        if not isinstance(payload, dict):
+            return {"data": None, "errors": [], "polled_at": latest_payload.get("timestamp")}
+        derived = payload.get("derived")
+        errors = payload.get("errors")
+        return {
+            "data": derived if isinstance(derived, dict) else None,
+            "errors": errors if isinstance(errors, list) else [],
+            "polled_at": latest_payload.get("timestamp"),
+        }
+
+    @app.get("/api/economics/catalog")
+    @app.get("/api/economics/catalog/")
+    def get_economics_catalog() -> Dict[str, list[str]]:
+        catalog = device_poller.get_metric_catalog()
+        economics = catalog.get("economics") if isinstance(catalog, dict) else None
+        metrics = economics.get("market") if isinstance(economics, dict) else None
+        return {"metrics": metrics if isinstance(metrics, list) else []}
+
+    @app.get("/api/economics/data")
+    @app.get("/api/economics/data/")
+    def get_economics_data(
+        metric: str,
+        start: str | None = None,
+        end: str | None = None,
+    ) -> Dict[str, Any]:
+        if not metric:
+            raise HTTPException(status_code=400, detail="metric required")
+        start_ms = _parse_iso_datetime(start)
+        end_ms = _parse_iso_datetime(end)
+        points = device_poller.get_metric_series(
+            device_type="economics",
+            device_id="market",
+            metric=metric,
+            start_ms=start_ms,
+            end_ms=end_ms,
+        )
+        return {"points": points}
 
     def _parse_iso_datetime(value: str | None) -> int | None:
         if not value:
