@@ -69,3 +69,33 @@ def test_default_settings_yaml_includes_heating_mode():
             "target_room_temp_c": 22.0,
         },
     }
+
+
+def test_default_settings_yaml_includes_economics():
+    parsed = parse_settings_yaml(DEFAULT_SETTINGS_YAML)
+
+    assert parsed["economics"] == {
+        "enabled": True,
+        "currencies": {
+            "crypto": "BTC",
+            "fiat": "RUB",
+        },
+        "exchange_rate": {
+            "integrations": {
+                "btc_usd": "mempool_space",
+                "usd_rub": "cbr",
+            },
+            "refresh_interval": 3600,
+            "stale_after": 7200,
+        },
+        "hashprice": {
+            "integration": "mempool_space",
+            "reward_stats_blocks": 144,
+            "hashrate_window": "1m",
+            "refresh_interval": 3600,
+            "stale_after": 7200,
+        },
+        "electricity": {
+            "price_per_kwh": 5.5,
+        },
+    }

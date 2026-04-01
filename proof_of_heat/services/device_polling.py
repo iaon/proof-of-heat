@@ -20,10 +20,20 @@ from apscheduler.triggers.interval import IntervalTrigger
 from whatsminer_cli import DEFAULT_PORT, DEFAULT_TIMEOUT, call_whatsminer
 
 from proof_of_heat.logging_utils import TRACE_LEVEL, ensure_trace_level
+from proof_of_heat.services.market_data import (
+    fetch_cbr_daily_usd_rub,
+    fetch_mempool_hashrate,
+    fetch_mempool_prices,
+    fetch_mempool_reward_stats,
+)
 from proof_of_heat.services.weather import fetch_met_no_weather, fetch_open_meteo_weather
 
 ensure_trace_level()
 logger = logging.getLogger("proof_of_heat.device_polling")
+
+ECONOMICS_DEVICE_TYPE = "economics"
+ECONOMICS_DEVICE_ID = "market"
+BITCOIN_BLOCKS_PER_DAY = 144.0
 
 
 @dataclass(frozen=True)
@@ -94,16 +104,29 @@ class DevicePoller:
             seen_weather_device_ids.add(weather_device_id)
             poll_jobs.append((DeviceKey("met_no", str(weather_device_id)), device, self.poll_met_no_device))
 
+        economics = self._load_economics_settings()
+        if economics is not None:
+            poll_jobs.append(
+                (
+                    DeviceKey(ECONOMICS_DEVICE_TYPE, ECONOMICS_DEVICE_ID),
+                    economics,
+                    self.poll_economics,
+                )
+            )
+
         if not poll_jobs:
-            logger.info("No devices configured for polling")
+            logger.info("No devices or economics polling configured")
             return
 
         executor = ThreadPoolExecutor(max_workers=max(1, len(poll_jobs)))
         self._scheduler = BackgroundScheduler(executors={"default": executor})
 
         for key, device, handler in poll_jobs:
-            interval_default = 180 if key.device_type == "zont" else default_interval
-            interval = int(device.get("refresh_interval", interval_default) or interval_default)
+            if key.device_type == ECONOMICS_DEVICE_TYPE:
+                interval = self._resolve_economics_interval_seconds(device)
+            else:
+                interval_default = 180 if key.device_type == "zont" else default_interval
+                interval = int(device.get("refresh_interval", interval_default) or interval_default)
             interval = max(1, interval)
             trigger = IntervalTrigger(seconds=interval)
             job_id = f"{key.device_type}-{key.device_id}"
@@ -591,6 +614,258 @@ class DevicePoller:
             location=location,
         )
 
+    def poll_economics(
+        self, device: dict[str, Any], request: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        del request
+        economics = device if isinstance(device, dict) else self._load_economics_settings()
+        if not isinstance(economics, dict):
+            return {"error": "Economics settings are missing or disabled"}
+
+        ts_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+        exchange_rate_cfg = economics.get("exchange_rate")
+        hashprice_cfg = economics.get("hashprice")
+        electricity_cfg = economics.get("electricity")
+        payload: dict[str, Any] = {
+            "provider": ECONOMICS_DEVICE_TYPE,
+            "device_id": ECONOMICS_DEVICE_ID,
+            "exchange_rate": {},
+            "hashprice": {},
+            "derived": {},
+            "errors": [],
+        }
+
+        exchange_stale_ms = self._resolve_stale_after_ms(exchange_rate_cfg, default_seconds=7200)
+        hashprice_stale_ms = self._resolve_stale_after_ms(hashprice_cfg, default_seconds=7200)
+        btc_usd: float | None = None
+        usd_rub: float | None = None
+        btc_rub: float | None = None
+        network_hashrate_th_s: float | None = None
+        avg_block_reward_btc: float | None = None
+        hashprice_btc_th_day: float | None = None
+        hashprice_rub_th_day: float | None = None
+        electricity_price_rub_kwh = self._safe_float(
+            electricity_cfg.get("price_per_kwh") if isinstance(electricity_cfg, dict) else None
+        )
+        power_rate_j_th: float | None = None
+        power_rate_source: str | None = None
+        metrics: list[MetricSample] = []
+
+        if isinstance(exchange_rate_cfg, dict):
+            integrations = exchange_rate_cfg.get("integrations")
+            btc_usd_integration = (
+                str(integrations.get("btc_usd"))
+                if isinstance(integrations, dict) and integrations.get("btc_usd") is not None
+                else "mempool_space"
+            )
+            usd_rub_integration = (
+                str(integrations.get("usd_rub"))
+                if isinstance(integrations, dict) and integrations.get("usd_rub") is not None
+                else "cbr"
+            )
+
+            if btc_usd_integration != "mempool_space":
+                payload["errors"].append(f"Unsupported BTC/USD integration: {btc_usd_integration}")
+            else:
+                try:
+                    prices_payload = fetch_mempool_prices(
+                        timeout_s=float(exchange_rate_cfg.get("timeout_s", 10.0) or 10.0)
+                    )
+                    btc_usd = self._extract_mempool_btc_usd(prices_payload)
+                    payload["exchange_rate"]["btc_usd"] = prices_payload
+                except Exception as exc:  # pragma: no cover - network fallback
+                    payload["errors"].append(f"BTC/USD fetch failed: {exc}")
+
+            if usd_rub_integration != "cbr":
+                payload["errors"].append(f"Unsupported USD/RUB integration: {usd_rub_integration}")
+            else:
+                try:
+                    usd_rub_payload = fetch_cbr_daily_usd_rub(
+                        timeout_s=float(exchange_rate_cfg.get("timeout_s", 10.0) or 10.0)
+                    )
+                    usd_rub = self._extract_cbr_usd_rub(usd_rub_payload)
+                    payload["exchange_rate"]["usd_rub"] = usd_rub_payload
+                except Exception as exc:  # pragma: no cover - network fallback
+                    payload["errors"].append(f"USD/RUB fetch failed: {exc}")
+
+        if isinstance(hashprice_cfg, dict):
+            reward_stats_blocks = max(1, self._safe_int(hashprice_cfg.get("reward_stats_blocks")) or 144)
+            hashrate_window = str(hashprice_cfg.get("hashrate_window") or "1m")
+            timeout_s = float(hashprice_cfg.get("timeout_s", 10.0) or 10.0)
+            integration = str(hashprice_cfg.get("integration") or "mempool_space")
+            if integration != "mempool_space":
+                payload["errors"].append(f"Unsupported hashprice integration: {integration}")
+            else:
+                try:
+                    reward_payload = fetch_mempool_reward_stats(
+                        block_count=reward_stats_blocks,
+                        timeout_s=timeout_s,
+                    )
+                    avg_block_reward_btc = self._extract_avg_block_reward_btc(reward_payload)
+                    payload["hashprice"]["reward_stats"] = reward_payload
+                except Exception as exc:  # pragma: no cover - network fallback
+                    payload["errors"].append(f"Reward stats fetch failed: {exc}")
+
+                try:
+                    hashrate_payload = fetch_mempool_hashrate(
+                        time_period=hashrate_window,
+                        timeout_s=timeout_s,
+                    )
+                    network_hashrate_th_s = self._extract_network_hashrate_th_s(hashrate_payload)
+                    payload["hashprice"]["hashrate"] = hashrate_payload
+                except Exception as exc:  # pragma: no cover - network fallback
+                    payload["errors"].append(f"Hashrate fetch failed: {exc}")
+
+        if self._db_path:
+            with self._db_lock:
+                with sqlite3.connect(self._db_path) as conn:
+                    self._ensure_schema(conn)
+                    if btc_usd is None:
+                        btc_usd = self._get_latest_metric_value(
+                            conn=conn,
+                            device_type=ECONOMICS_DEVICE_TYPE,
+                            device_id=ECONOMICS_DEVICE_ID,
+                            metric="exchange_rate_btc_usd",
+                            max_age_ms=exchange_stale_ms,
+                            reference_ts_ms=ts_ms,
+                        )
+                    if usd_rub is None:
+                        usd_rub = self._get_latest_metric_value(
+                            conn=conn,
+                            device_type=ECONOMICS_DEVICE_TYPE,
+                            device_id=ECONOMICS_DEVICE_ID,
+                            metric="exchange_rate_usd_rub",
+                            max_age_ms=exchange_stale_ms,
+                            reference_ts_ms=ts_ms,
+                        )
+                    if network_hashrate_th_s is None:
+                        network_hashrate_th_s = self._get_latest_metric_value(
+                            conn=conn,
+                            device_type=ECONOMICS_DEVICE_TYPE,
+                            device_id=ECONOMICS_DEVICE_ID,
+                            metric="network_hashrate_th_s",
+                            max_age_ms=hashprice_stale_ms,
+                            reference_ts_ms=ts_ms,
+                        )
+                    if avg_block_reward_btc is None:
+                        avg_block_reward_btc = self._get_latest_metric_value(
+                            conn=conn,
+                            device_type=ECONOMICS_DEVICE_TYPE,
+                            device_id=ECONOMICS_DEVICE_ID,
+                            metric="avg_block_reward_btc",
+                            max_age_ms=hashprice_stale_ms,
+                            reference_ts_ms=ts_ms,
+                        )
+                    power_rate = self._resolve_power_rate_metric(
+                        conn=conn,
+                        max_age_ms=max(exchange_stale_ms, hashprice_stale_ms),
+                        reference_ts_ms=ts_ms,
+                    )
+                    if power_rate is not None:
+                        power_rate_j_th = power_rate["value"]
+                        power_rate_source = power_rate["source"]
+
+        if btc_usd is not None:
+            metrics.append(MetricSample(name="exchange_rate_btc_usd", value=btc_usd, unit="USD/BTC"))
+            payload["derived"]["exchange_rate_btc_usd"] = btc_usd
+        if usd_rub is not None:
+            metrics.append(MetricSample(name="exchange_rate_usd_rub", value=usd_rub, unit="RUB/USD"))
+            payload["derived"]["exchange_rate_usd_rub"] = usd_rub
+        if btc_usd is not None and usd_rub is not None:
+            btc_rub = btc_usd * usd_rub
+            metrics.append(MetricSample(name="exchange_rate_btc_rub", value=btc_rub, unit="RUB/BTC"))
+            payload["derived"]["exchange_rate_btc_rub"] = btc_rub
+
+        if network_hashrate_th_s is not None:
+            metrics.append(
+                MetricSample(
+                    name="network_hashrate_th_s",
+                    value=network_hashrate_th_s,
+                    unit="TH/s",
+                )
+            )
+            payload["derived"]["network_hashrate_th_s"] = network_hashrate_th_s
+        if avg_block_reward_btc is not None:
+            metrics.append(
+                MetricSample(
+                    name="avg_block_reward_btc",
+                    value=avg_block_reward_btc,
+                    unit="BTC/block",
+                )
+            )
+            payload["derived"]["avg_block_reward_btc"] = avg_block_reward_btc
+        if (
+            avg_block_reward_btc is not None
+            and network_hashrate_th_s is not None
+            and network_hashrate_th_s > 0
+        ):
+            hashprice_btc_th_day = (avg_block_reward_btc * BITCOIN_BLOCKS_PER_DAY) / network_hashrate_th_s
+            metrics.append(
+                MetricSample(
+                    name="hashprice_btc_th_day",
+                    value=hashprice_btc_th_day,
+                    unit="BTC/TH/day",
+                )
+            )
+            payload["derived"]["hashprice_btc_th_day"] = hashprice_btc_th_day
+        if hashprice_btc_th_day is not None and btc_rub is not None:
+            hashprice_rub_th_day = hashprice_btc_th_day * btc_rub
+            metrics.append(
+                MetricSample(
+                    name="hashprice_rub_th_day",
+                    value=hashprice_rub_th_day,
+                    unit="RUB/TH/day",
+                )
+            )
+            payload["derived"]["hashprice_rub_th_day"] = hashprice_rub_th_day
+
+        if electricity_price_rub_kwh is not None:
+            metrics.append(
+                MetricSample(
+                    name="electricity_price_rub_kwh",
+                    value=electricity_price_rub_kwh,
+                    unit="RUB/kWh",
+                )
+            )
+            payload["derived"]["electricity_price_rub_kwh"] = electricity_price_rub_kwh
+        if electricity_price_rub_kwh is not None and power_rate_j_th is not None:
+            hashcost_rub_th_day = power_rate_j_th * 0.024 * electricity_price_rub_kwh
+            metrics.append(
+                MetricSample(
+                    name="hashcost_rub_th_day",
+                    value=hashcost_rub_th_day,
+                    unit="RUB/TH/day",
+                )
+            )
+            payload["derived"]["hashcost_rub_th_day"] = hashcost_rub_th_day
+            payload["derived"]["power_rate_source"] = power_rate_source
+            if btc_rub is not None and btc_rub > 0:
+                hashcost_btc_th_day = hashcost_rub_th_day / btc_rub
+                metrics.append(
+                    MetricSample(
+                        name="hashcost_btc_th_day",
+                        value=hashcost_btc_th_day,
+                        unit="BTC/TH/day",
+                    )
+                )
+                payload["derived"]["hashcost_btc_th_day"] = hashcost_btc_th_day
+
+        if self._db_path:
+            self._write_raw_event(
+                ts_ms=ts_ms,
+                device_type=ECONOMICS_DEVICE_TYPE,
+                device_id=ECONOMICS_DEVICE_ID,
+                payload=payload,
+            )
+            if metrics:
+                self._write_metrics(
+                    ts_ms=ts_ms,
+                    device_type=ECONOMICS_DEVICE_TYPE,
+                    device_id=ECONOMICS_DEVICE_ID,
+                    metrics=metrics,
+                )
+        return payload
+
     def _ping_host(self, host: str, port: int, timeout_s: int = 1) -> bool:
         if not host:
             return False
@@ -701,6 +976,35 @@ class DevicePoller:
                     rows,
                 )
                 self._refresh_control_inputs(conn=conn, ts_ms=ts_ms)
+
+    def _load_economics_settings(self) -> dict[str, Any] | None:
+        if not isinstance(self._settings, dict):
+            return None
+        economics = self._settings.get("economics")
+        if not isinstance(economics, dict):
+            return None
+        if economics.get("enabled") is False:
+            return None
+        return economics
+
+    def _resolve_economics_interval_seconds(self, economics: dict[str, Any]) -> int:
+        intervals: list[int] = []
+        for key in ("exchange_rate", "hashprice"):
+            section = economics.get(key)
+            if not isinstance(section, dict):
+                continue
+            interval = self._safe_int(section.get("refresh_interval"))
+            if interval is not None and interval > 0:
+                intervals.append(interval)
+        return min(intervals) if intervals else 3600
+
+    def _resolve_stale_after_ms(self, section: Any, default_seconds: int) -> int:
+        if not isinstance(section, dict):
+            return default_seconds * 1000
+        stale_after = self._safe_int(section.get("stale_after"))
+        if stale_after is None or stale_after < 0:
+            stale_after = default_seconds
+        return stale_after * 1000
 
     def _refresh_control_inputs(self, conn: sqlite3.Connection, ts_ms: int) -> None:
         control_inputs = self._settings.get("control_inputs") if isinstance(self._settings, dict) else None
@@ -874,6 +1178,73 @@ class DevicePoller:
             "value": sample_value + correction,
             "source": f"{device_type}:{device_id}:{metric}",
         }
+
+    def _get_latest_metric_value(
+        self,
+        conn: sqlite3.Connection,
+        device_type: str,
+        device_id: str,
+        metric: str,
+        max_age_ms: int,
+        reference_ts_ms: int,
+    ) -> float | None:
+        resolved = self._resolve_source_metric(
+            conn=conn,
+            spec={
+                "device_type": device_type,
+                "device_id": device_id,
+                "metric": metric,
+            },
+            max_age_ms=max_age_ms,
+            reference_ts_ms=reference_ts_ms,
+        )
+        if resolved is None:
+            return None
+        return self._safe_float(resolved.get("value"))
+
+    def _resolve_power_rate_metric(
+        self,
+        conn: sqlite3.Connection,
+        max_age_ms: int,
+        reference_ts_ms: int,
+    ) -> dict[str, Any] | None:
+        configured_device_ids = {
+            str(device.get("device_id"))
+            for device in (
+                self._settings.get("devices", {}).get("whatsminer", [])
+                if isinstance(self._settings, dict) and isinstance(self._settings.get("devices"), dict)
+                else []
+            )
+            if isinstance(device, dict) and device.get("device_id") is not None
+        }
+        rows = conn.execute(
+            """
+            SELECT device_type, device_id, metric, ts, value
+            FROM metrics
+            WHERE metric IN ('power_rate', 'power_rate_j_th')
+            ORDER BY ts DESC, id DESC
+            """
+        ).fetchall()
+        latest_by_source: dict[tuple[str, str], dict[str, Any]] = {}
+        for device_type, device_id, metric, sample_ts, sample_value in rows:
+            source_key = (str(device_type), str(device_id))
+            if source_key in latest_by_source:
+                continue
+            if configured_device_ids and str(device_id) not in configured_device_ids:
+                continue
+            sample_ts_int = self._safe_int(sample_ts)
+            sample_value_float = self._safe_float(sample_value)
+            if sample_ts_int is None or sample_value_float is None:
+                continue
+            if reference_ts_ms - sample_ts_int > max_age_ms:
+                continue
+            latest_by_source[source_key] = {
+                "value": sample_value_float,
+                "source": f"{device_type}:{device_id}:{metric}",
+            }
+        if len(latest_by_source) != 1:
+            return None
+        return next(iter(latest_by_source.values()))
 
     def _ensure_schema(self, conn: sqlite3.Connection) -> None:
         if self._schema_ready:
@@ -1172,6 +1543,39 @@ class DevicePoller:
         if numeric is None:
             return []
         return [MetricSample(name=name, value=numeric, unit=unit)]
+
+    def _extract_mempool_btc_usd(self, payload: dict[str, Any]) -> float | None:
+        prices = payload.get("prices") if isinstance(payload, dict) else None
+        if not isinstance(prices, dict):
+            return None
+        return self._safe_float(prices.get("USD"))
+
+    def _extract_cbr_usd_rub(self, payload: dict[str, Any]) -> float | None:
+        rates = payload.get("rates") if isinstance(payload, dict) else None
+        if not isinstance(rates, dict):
+            return None
+        return self._safe_float(rates.get("USD_RUB"))
+
+    def _extract_network_hashrate_th_s(self, payload: dict[str, Any]) -> float | None:
+        data = payload.get("payload") if isinstance(payload, dict) else None
+        if not isinstance(data, dict):
+            return None
+        current_hashrate_h_s = self._safe_float(data.get("currentHashrate"))
+        if current_hashrate_h_s is None:
+            current_hashrate_h_s = self._safe_float(data.get("avgHashrate"))
+        if current_hashrate_h_s is None:
+            return None
+        return current_hashrate_h_s / 1_000_000_000_000
+
+    def _extract_avg_block_reward_btc(self, payload: dict[str, Any]) -> float | None:
+        block_count = self._safe_int(payload.get("block_count")) if isinstance(payload, dict) else None
+        data = payload.get("payload") if isinstance(payload, dict) else None
+        if block_count is None or block_count <= 0 or not isinstance(data, dict):
+            return None
+        total_reward_sats = self._safe_float(data.get("totalReward"))
+        if total_reward_sats is None:
+            return None
+        return (total_reward_sats / 100_000_000) / block_count
 
     def _load_location(self) -> dict[str, Any] | None:
         if not isinstance(self._settings, dict):

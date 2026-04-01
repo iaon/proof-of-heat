@@ -13,6 +13,14 @@
     <p class="muted">Select one or more series (device type + device id + metric) to plot history.</p>
 
     <div class="card">
+        <div class="row preset-row">
+            <label>Presets</label>
+            <div class="preset-actions">
+                <button type="button" class="preset-btn" data-preset="economics-rates">Economics: Rates</button>
+                <button type="button" class="preset-btn" data-preset="economics-profitability">Economics: Profitability</button>
+                <button type="button" class="preset-btn" data-preset="economics-market">Economics: Market Inputs</button>
+            </div>
+        </div>
         <div class="row" style="margin-bottom:12px;">
             <label for="metric-rows">Series</label>
             <div class="metric-rows" id="metric-rows"></div>

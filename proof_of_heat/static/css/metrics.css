@@ -1,3 +1,23 @@
+.preset-row {
+    align-items: flex-start;
+    margin-bottom: 12px;
+}
+
+.preset-actions {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+.preset-btn {
+    background: #0f766e;
+    font-size: 13px;
+}
+
+.preset-btn:hover {
+    background: #115e59;
+}
+
 .metric-rows {
     display: flex;
     flex-direction: column;

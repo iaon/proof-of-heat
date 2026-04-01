@@ -1,6 +1,7 @@
 import json
 import sqlite3
 import time
+from datetime import datetime, timezone
 
 from proof_of_heat.services import device_polling
 from proof_of_heat.services.device_polling import DevicePoller
@@ -735,5 +736,236 @@ def test_zont_refresh_interval_180_is_valid(monkeypatch, tmp_path):
         jobs = poller._scheduler.get_jobs()
         assert len(jobs) == 1
         assert "interval[0:03:00]" in str(jobs[0].trigger)
+    finally:
+        poller.shutdown()
+
+
+def test_economics_metrics_are_computed_and_persisted(monkeypatch, tmp_path):
+    current_iso = datetime.now(timezone.utc).isoformat()
+    settings = {
+        "devices": {
+            "whatsminer": [
+                {
+                    "device_id": "miner01",
+                    "login": "login",
+                    "password": "pass",
+                    "host": "example.com",
+                    "port": 4028,
+                }
+            ]
+        },
+        "economics": {
+            "enabled": True,
+            "currencies": {
+                "crypto": "BTC",
+                "fiat": "RUB",
+            },
+            "exchange_rate": {
+                "integrations": {
+                    "btc_usd": "mempool_space",
+                    "usd_rub": "cbr",
+                },
+                "refresh_interval": 3600,
+                "stale_after": 7200,
+            },
+            "hashprice": {
+                "integration": "mempool_space",
+                "reward_stats_blocks": 144,
+                "hashrate_window": "1m",
+                "refresh_interval": 3600,
+                "stale_after": 7200,
+            },
+            "electricity": {
+                "price_per_kwh": 5.5,
+            },
+        },
+    }
+
+    monkeypatch.setattr(device_polling.DevicePoller, "_ping_host", lambda *args, **kwargs: True)
+
+    def fake_call_whatsminer(**kwargs):
+        if kwargs["cmd"] == "get.miner.status" and kwargs.get("param") == "summary":
+            return {
+                "when": current_iso,
+                "msg": {
+                    "summary": {
+                        "power": 1000,
+                        "power-rate": 20.0,
+                        "board-temperature": [55.0],
+                    }
+                },
+            }
+        if kwargs["cmd"] == "get.miner.status" and kwargs.get("param") == "pools":
+            return {
+                "when": current_iso,
+                "msg": {"pools": []},
+            }
+        if kwargs["cmd"] == "get.device.info":
+            return {
+                "when": current_iso,
+                "msg": {"model": "M50"},
+            }
+        raise AssertionError(f"Unexpected Whatsminer call: {kwargs}")
+
+    monkeypatch.setattr(device_polling, "call_whatsminer", fake_call_whatsminer)
+    monkeypatch.setattr(
+        device_polling,
+        "fetch_mempool_prices",
+        lambda **kwargs: {
+            "provider": "mempool_space",
+            "timestamp": 1774739307,
+            "prices": {"USD": 100000},
+        },
+    )
+    monkeypatch.setattr(
+        device_polling,
+        "fetch_cbr_daily_usd_rub",
+        lambda **kwargs: {
+            "provider": "cbr",
+            "timestamp": "01.04.2026",
+            "rates": {"USD_RUB": 90.5},
+        },
+    )
+    monkeypatch.setattr(
+        device_polling,
+        "fetch_mempool_reward_stats",
+        lambda **kwargs: {
+            "provider": "mempool_space",
+            "block_count": 144,
+            "payload": {
+                "totalReward": "90000000000",
+                "totalFee": "100000000",
+                "totalTx": "1000",
+            },
+        },
+    )
+    monkeypatch.setattr(
+        device_polling,
+        "fetch_mempool_hashrate",
+        lambda **kwargs: {
+            "provider": "mempool_space",
+            "time_period": "1m",
+            "payload": {"currentHashrate": 500_000_000_000_000_000_000},
+        },
+    )
+
+    poller = DevicePoller(settings, data_dir=tmp_path)
+    poller.poll_whatsminer_device(settings["devices"]["whatsminer"][0])
+    payload = poller.poll_economics(settings["economics"])
+
+    assert payload["derived"]["exchange_rate_btc_usd"] == 100000
+    assert payload["derived"]["exchange_rate_usd_rub"] == 90.5
+    assert payload["derived"]["exchange_rate_btc_rub"] == 9_050_000
+    assert payload["derived"]["network_hashrate_th_s"] == 500_000_000
+    assert payload["derived"]["avg_block_reward_btc"] == 6.25
+    assert abs(payload["derived"]["hashprice_btc_th_day"] - 0.0000018) < 1e-12
+    assert abs(payload["derived"]["hashprice_rub_th_day"] - 16.29) < 1e-9
+    assert payload["derived"]["electricity_price_rub_kwh"] == 5.5
+    assert abs(payload["derived"]["hashcost_rub_th_day"] - 2.64) < 1e-9
+    assert abs(payload["derived"]["hashcost_btc_th_day"] - (2.64 / 9_050_000)) < 1e-15
+    assert payload["derived"]["power_rate_source"] == "whatsminer:miner01:power_rate"
+
+    metric_names = set(poller.list_metric_names("economics", "market"))
+    assert {
+        "exchange_rate_btc_usd",
+        "exchange_rate_usd_rub",
+        "exchange_rate_btc_rub",
+        "network_hashrate_th_s",
+        "avg_block_reward_btc",
+        "hashprice_btc_th_day",
+        "hashprice_rub_th_day",
+        "electricity_price_rub_kwh",
+        "hashcost_rub_th_day",
+        "hashcost_btc_th_day",
+    } <= metric_names
+
+    with sqlite3.connect(tmp_path / "telemetry.sqlite3") as conn:
+        raw_event = conn.execute(
+            """
+            SELECT payload
+            FROM raw_events
+            WHERE device_type = 'economics' AND device_id = 'market'
+            ORDER BY id DESC
+            LIMIT 1
+            """
+        ).fetchone()
+
+    assert raw_event is not None
+    raw_payload = json.loads(raw_event[0])
+    assert raw_payload["exchange_rate"]["btc_usd"]["prices"]["USD"] == 100000
+    assert raw_payload["hashprice"]["reward_stats"]["payload"]["totalReward"] == "90000000000"
+
+
+def test_economics_job_is_scheduled_without_devices(monkeypatch, tmp_path):
+    settings = {
+        "economics": {
+            "enabled": True,
+            "exchange_rate": {
+                "integrations": {
+                    "btc_usd": "mempool_space",
+                    "usd_rub": "cbr",
+                },
+                "refresh_interval": 3600,
+            },
+            "hashprice": {
+                "integration": "mempool_space",
+                "refresh_interval": 7200,
+            },
+            "electricity": {
+                "price_per_kwh": 5.5,
+            },
+        }
+    }
+
+    monkeypatch.setattr(DevicePoller, "poll_economics", lambda self, device, request=None: {"ok": True})
+
+    poller = DevicePoller(settings, data_dir=tmp_path)
+    poller.start()
+    try:
+        assert poller._scheduler is not None
+        jobs = poller._scheduler.get_jobs()
+        assert len(jobs) == 1
+        assert jobs[0].id == "economics-market"
+        assert "interval[1:00:00]" in str(jobs[0].trigger)
+    finally:
+        poller.shutdown()
+
+
+def test_economics_is_polled_immediately_on_start(monkeypatch, tmp_path):
+    settings = {
+        "economics": {
+            "enabled": True,
+            "exchange_rate": {
+                "integrations": {
+                    "btc_usd": "mempool_space",
+                    "usd_rub": "cbr",
+                },
+                "refresh_interval": 3600,
+            },
+            "hashprice": {
+                "integration": "mempool_space",
+                "refresh_interval": 3600,
+            },
+            "electricity": {
+                "price_per_kwh": 5.5,
+            },
+        }
+    }
+
+    calls = []
+
+    def fake_poll_economics(self, device, request=None):
+        calls.append(device.copy())
+        return {"provider": "economics", "device_id": "market", "ok": True}
+
+    monkeypatch.setattr(DevicePoller, "poll_economics", fake_poll_economics)
+
+    poller = DevicePoller(settings, data_dir=tmp_path)
+    poller.start()
+    try:
+        assert len(calls) == 1
+        latest_payloads = poller.get_latest_payloads()
+        assert "economics:market" in latest_payloads
+        assert latest_payloads["economics:market"]["payload"]["ok"] is True
     finally:
         poller.shutdown()

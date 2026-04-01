@@ -12,13 +12,34 @@ const endSecondEl = document.getElementById("end-second");
 const resetRangeBtn = document.getElementById("reset-range");
 const emptyEl = document.getElementById("empty");
 const ctx = document.getElementById("chart").getContext("2d");
+const presetButtons = Array.from(document.querySelectorAll(".preset-btn"));
 let chart;
 let metricRowSeq = 0;
 let deviceTypes = [];
 let metricsCatalog = {};
 const metricRows = [];
 const STORAGE_KEY = "proof_of_heat_metrics_view_v1";
+const ECONOMICS_DEVICE_TYPE = "economics";
+const ECONOMICS_DEVICE_ID = "market";
 const palette = ["#2563eb", "#dc2626", "#16a34a", "#7c3aed", "#ea580c", "#0891b2", "#db2777", "#0f766e"];
+const METRIC_PRESETS = {
+    "economics-rates": [
+        "exchange_rate_btc_usd",
+        "exchange_rate_usd_rub",
+        "exchange_rate_btc_rub",
+    ],
+    "economics-profitability": [
+        "hashprice_btc_th_day",
+        "hashprice_rub_th_day",
+        "hashcost_btc_th_day",
+        "hashcost_rub_th_day",
+    ],
+    "economics-market": [
+        "network_hashrate_th_s",
+        "avg_block_reward_btc",
+        "electricity_price_rub_kwh",
+    ],
+};
 
 function setOptions(select, options) {
     select.innerHTML = "";
@@ -32,6 +53,16 @@ function setOptions(select, options) {
         opt.textContent = item;
         select.appendChild(opt);
     });
+}
+
+function ensureSelectHasOption(select, value) {
+    if (!value) return;
+    const options = Array.from(select.options);
+    if (options.some((item) => item.value === value)) return;
+    const opt = document.createElement("option");
+    opt.value = value;
+    opt.textContent = value;
+    select.appendChild(opt);
 }
 
 function toDateInputValue(date) {
@@ -139,9 +170,26 @@ function describeZontMetric(metricName) {
     return `ZONT metric: ${prettifyMetricName(metricName)}`;
 }
 
+function describeEconomicsMetric(metricName) {
+    const labels = {
+        exchange_rate_btc_usd: "BTC price in USD",
+        exchange_rate_usd_rub: "USD to RUB exchange rate",
+        exchange_rate_btc_rub: "BTC price in RUB",
+        network_hashrate_th_s: "Network hashrate in TH/s",
+        avg_block_reward_btc: "Average block reward in BTC",
+        hashprice_btc_th_day: "Hashprice in BTC per TH per day",
+        hashprice_rub_th_day: "Hashprice in RUB per TH per day",
+        electricity_price_rub_kwh: "Electricity price in RUB per kWh",
+        hashcost_rub_th_day: "Electricity cost in RUB per TH per day",
+        hashcost_btc_th_day: "Electricity cost in BTC per TH per day",
+    };
+    return labels[metricName] || `Economics metric: ${prettifyMetricName(metricName)}`;
+}
+
 function describeMetric(deviceType, metricName) {
     if (!metricName) return "—";
     if (deviceType === "zont") return describeZontMetric(metricName);
+    if (deviceType === ECONOMICS_DEVICE_TYPE) return describeEconomicsMetric(metricName);
     return prettifyMetricName(metricName);
 }
 
@@ -182,9 +230,17 @@ function updateRowInfo(row) {
     row.humanEl.textContent = describeMetric(row.deviceTypeEl.value, metricName);
 }
 
-function selectMetricForRow(row, value) {
+function selectMetricForRow(row, value, options = {}) {
+    const { force = false } = options;
     const selected = row.options.find((item) => item.value === value);
     if (!selected) {
+        if (force && value) {
+            row.metricValueEl.value = value;
+            row.searchEl.value = value;
+            updateRowInfo(row);
+            renderRowDropdown(row, row.searchEl.value);
+            return;
+        }
         row.metricValueEl.value = "";
         row.searchEl.value = "";
         updateRowInfo(row);
@@ -351,9 +407,22 @@ function createMetricRow(initialState = null) {
     return row;
 }
 
+function clearMetricRows() {
+    metricRows.splice(0, metricRows.length);
+    metricRowsEl.innerHTML = "";
+    updateRemoveButtons();
+}
+
 async function loadChart() {
     const selectedSeries = collectSelectedSeries();
-    if (!selectedSeries.length) return;
+    if (!selectedSeries.length) {
+        if (chart) {
+            chart.destroy();
+            chart = null;
+        }
+        emptyEl.textContent = "Select one or more series.";
+        return;
+    }
 
     const startDate = startDateEl.value;
     const startHour = startHourEl.value;
@@ -459,14 +528,16 @@ const initialSeries = Array.isArray(savedState && savedState.series) && savedSta
     : [{}];
 initialSeries.forEach((series) => createMetricRow(series));
 
-async function restoreRowsFromState() {
+async function hydrateRowsFromState() {
     for (const row of metricRows) {
         const initial = row.initialState || {};
-        if (initial.device_type && deviceTypes.includes(initial.device_type)) {
+        if (initial.device_type) {
+            ensureSelectHasOption(row.deviceTypeEl, initial.device_type);
             row.deviceTypeEl.value = initial.device_type;
             await loadDeviceIdsForRow(row);
         }
         if (initial.device_id) {
+            ensureSelectHasOption(row.deviceIdEl, initial.device_id);
             const idOptions = Array.from(row.deviceIdEl.options).map((opt) => opt.value);
             if (idOptions.includes(initial.device_id)) {
                 row.deviceIdEl.value = initial.device_id;
@@ -474,13 +545,36 @@ async function restoreRowsFromState() {
         }
         await loadMetricsForRow(row);
         if (initial.metric) {
-            selectMetricForRow(row, initial.metric);
+            selectMetricForRow(row, initial.metric, { force: true });
         }
     }
 }
 
-loadDeviceTypes().then(async () => {
-    await restoreRowsFromState();
+async function applyPreset(presetName) {
+    const metrics = METRIC_PRESETS[presetName];
+    if (!Array.isArray(metrics) || !metrics.length) return;
+    clearMetricRows();
+    metrics.forEach((metricName) => {
+        createMetricRow({
+            device_type: ECONOMICS_DEVICE_TYPE,
+            device_id: ECONOMICS_DEVICE_ID,
+            metric: metricName,
+        });
+    });
+    await hydrateRowsFromState();
     persistState();
     loadChart();
+}
+
+const catalogReadyPromise = loadDeviceTypes().then(async () => {
+    await hydrateRowsFromState();
+    persistState();
+    loadChart();
+});
+
+presetButtons.forEach((button) => {
+    button.addEventListener("click", () => {
+        const presetName = button.getAttribute("data-preset");
+        catalogReadyPromise.then(() => applyPreset(presetName));
+    });
 });

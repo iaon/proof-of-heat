@@ -180,6 +180,13 @@ def test_ui_respects_root_path(tmp_path, monkeypatch):
     assert config_resp.status_code == 200
     assert 'const rootPath = "/app";' in config_resp.body.decode()
 
+    metrics_resp = routes["/metrics"](make_request("/metrics", root_path="/app"))
+    assert metrics_resp.status_code == 200
+    metrics_markup = metrics_resp.body.decode()
+    assert 'const rootPath = "/app";' in metrics_markup
+    assert 'data-preset="economics-rates"' in metrics_markup
+    assert 'data-preset="economics-profitability"' in metrics_markup
+
 
 def test_status_snapshot(tmp_path, monkeypatch):
     routes = build_routes(tmp_path, monkeypatch)
