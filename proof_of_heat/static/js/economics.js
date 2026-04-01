@@ -25,7 +25,7 @@ let metricRowSeq = 0;
 let availableMetrics = [];
 let catalogData = {
     enabled: true,
-    currencies: { crypto: "BTC", fiat: "RUB" },
+    currencies: {},
     current_metrics: [],
     labels: {},
     presets: {},

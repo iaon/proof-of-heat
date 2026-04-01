@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from proof_of_heat.services.market_data import (
+    CBR_BASE_CURRENCY,
     fetch_cbr_daily_rates,
     fetch_mempool_hashrate,
     fetch_mempool_prices,
@@ -21,6 +22,7 @@ ECONOMICS_DEVICE_TYPE = "economics"
 ECONOMICS_DEVICE_ID = "market"
 BITCOIN_BLOCKS_PER_DAY = 144.0
 USD_CURRENCY = "USD"
+MEMPOOL_CRYPTO_CURRENCY = "BTC"
 
 
 @dataclass(frozen=True)
@@ -120,8 +122,9 @@ class EconomicsPoller:
             )
 
         currencies = _resolve_currencies(economics_cfg)
-        metric_names = build_economics_metric_names(currencies["crypto"], currencies["fiat"])
         metadata = build_economics_metadata(economics_cfg)
+        crypto = currencies["crypto"]
+        fiat = currencies["fiat"]
         exchange_rate_cfg = economics_cfg.get("exchange_rate")
         hashprice_cfg = economics_cfg.get("hashprice")
         electricity_cfg = economics_cfg.get("electricity")
@@ -135,11 +138,14 @@ class EconomicsPoller:
             "derived": {},
             "errors": [],
         }
+        if not crypto or not fiat:
+            payload["errors"].append("Economics currencies are missing or invalid")
+            return EconomicsPollResult(ts_ms=ts_ms, payload=payload, metrics=[])
+
+        metric_names = build_economics_metric_names(crypto, fiat)
         metrics: list[MetricSample] = []
         exchange_stale_ms = _resolve_stale_after_ms(exchange_rate_cfg, default_seconds=7200)
         hashprice_stale_ms = _resolve_stale_after_ms(hashprice_cfg, default_seconds=7200)
-        crypto = currencies["crypto"]
-        fiat = currencies["fiat"]
 
         crypto_usd: float | None = None
         usd_fiat: float | None = 1.0 if fiat == USD_CURRENCY else None
@@ -159,17 +165,15 @@ class EconomicsPoller:
             crypto_usd_integration = _resolve_exchange_integration(
                 integrations=integrations,
                 primary_key="crypto_usd",
-                legacy_key="btc_usd",
                 default="mempool_space",
             )
             usd_fiat_integration = _resolve_exchange_integration(
                 integrations=integrations,
                 primary_key="usd_fiat",
-                legacy_key="usd_rub",
                 default="cbr",
             )
 
-            if crypto != "BTC":
+            if crypto != MEMPOOL_CRYPTO_CURRENCY:
                 payload["errors"].append(f"Unsupported crypto currency for mempool_space: {crypto}")
             elif crypto_usd_integration != "mempool_space":
                 payload["errors"].append(f"Unsupported {crypto}/USD integration: {crypto_usd_integration}")
@@ -193,7 +197,7 @@ class EconomicsPoller:
             else:
                 try:
                     requested_codes = {USD_CURRENCY}
-                    if fiat != "RUB":
+                    if fiat != CBR_BASE_CURRENCY:
                         requested_codes.add(fiat)
                     usd_fiat_payload = fetch_cbr_daily_rates(
                         codes=sorted(requested_codes),
@@ -209,7 +213,7 @@ class EconomicsPoller:
             hashrate_window = str(hashprice_cfg.get("hashrate_window") or "1m")
             timeout_s = float(hashprice_cfg.get("timeout_s", 10.0) or 10.0)
             integration = str(hashprice_cfg.get("integration") or "mempool_space")
-            if crypto != "BTC":
+            if crypto != MEMPOOL_CRYPTO_CURRENCY:
                 payload["errors"].append(f"Unsupported crypto currency for hashprice: {crypto}")
             elif integration != "mempool_space":
                 payload["errors"].append(f"Unsupported hashprice integration: {integration}")
@@ -219,7 +223,7 @@ class EconomicsPoller:
                         block_count=reward_stats_blocks,
                         timeout_s=timeout_s,
                     )
-                    avg_block_reward_crypto = _extract_avg_block_reward_btc(reward_payload)
+                    avg_block_reward_crypto = _extract_mempool_avg_block_reward(reward_payload)
                     payload["hashprice"]["reward_stats"] = reward_payload
                 except Exception as exc:  # pragma: no cover - network fallback
                     payload["errors"].append(f"Reward stats fetch failed: {exc}")
@@ -397,6 +401,18 @@ def build_economics_metadata(economics: Any) -> EconomicsMetadata:
     currencies = _resolve_currencies(economics)
     crypto = currencies["crypto"]
     fiat = currencies["fiat"]
+    if not crypto or not fiat:
+        return EconomicsMetadata(
+            enabled=enabled,
+            currencies=currencies,
+            current_metrics=[],
+            labels={},
+            presets={
+                "rates": {"label": "Rates", "metrics": []},
+                "profitability": {"label": "Profitability", "metrics": []},
+                "market": {"label": "Market inputs", "metrics": []},
+            },
+        )
     metric_names = build_economics_metric_names(crypto, fiat)
     current_metrics = [
         metric_names.exchange_rate_crypto_usd,
@@ -485,25 +501,22 @@ def build_economics_metric_names(crypto: str, fiat: str) -> EconomicsMetricNames
 
 def _resolve_currencies(economics: Any) -> dict[str, str]:
     currencies = economics.get("currencies") if isinstance(economics, dict) else None
-    crypto = str(currencies.get("crypto") or "BTC").strip().upper() if isinstance(currencies, dict) else "BTC"
-    fiat = str(currencies.get("fiat") or "RUB").strip().upper() if isinstance(currencies, dict) else "RUB"
+    crypto = str(currencies.get("crypto") or "").strip().upper() if isinstance(currencies, dict) else ""
+    fiat = str(currencies.get("fiat") or "").strip().upper() if isinstance(currencies, dict) else ""
     return {
-        "crypto": crypto or "BTC",
-        "fiat": fiat or "RUB",
+        "crypto": crypto,
+        "fiat": fiat,
     }
 
 
 def _resolve_exchange_integration(
     integrations: Any,
     primary_key: str,
-    legacy_key: str,
     default: str,
 ) -> str:
     if not isinstance(integrations, dict):
         return default
     value = integrations.get(primary_key)
-    if value is None:
-        value = integrations.get(legacy_key)
     return str(value) if value is not None else default
 
 
@@ -601,19 +614,20 @@ def _extract_mempool_usd_price(payload: dict[str, Any]) -> float | None:
 
 def _extract_cbr_usd_fiat(payload: dict[str, Any], fiat: str) -> float | None:
     rates = payload.get("rates") if isinstance(payload, dict) else None
+    base_currency = str(payload.get("base_currency") or CBR_BASE_CURRENCY).strip().upper()
     if not isinstance(rates, dict):
         return None
     if fiat == "USD":
         return 1.0
-    usd_rub = _safe_float(rates.get("USD"))
-    if usd_rub is None:
+    usd_base_rate = _safe_float(rates.get("USD"))
+    if usd_base_rate is None:
         return None
-    if fiat == "RUB":
-        return usd_rub
-    fiat_rub = _safe_float(rates.get(fiat))
-    if fiat_rub is None or fiat_rub <= 0:
+    if fiat == base_currency:
+        return usd_base_rate
+    fiat_base_rate = _safe_float(rates.get(fiat))
+    if fiat_base_rate is None or fiat_base_rate <= 0:
         return None
-    return usd_rub / fiat_rub
+    return usd_base_rate / fiat_base_rate
 
 
 def _extract_network_hashrate_th_s(payload: dict[str, Any]) -> float | None:
@@ -628,7 +642,7 @@ def _extract_network_hashrate_th_s(payload: dict[str, Any]) -> float | None:
     return current_hashrate_h_s / 1_000_000_000_000
 
 
-def _extract_avg_block_reward_btc(payload: dict[str, Any]) -> float | None:
+def _extract_mempool_avg_block_reward(payload: dict[str, Any]) -> float | None:
     block_count = _safe_int(payload.get("block_count")) if isinstance(payload, dict) else None
     data = payload.get("payload") if isinstance(payload, dict) else None
     if block_count is None or block_count <= 0 or not isinstance(data, dict):

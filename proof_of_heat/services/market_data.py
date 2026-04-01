@@ -7,6 +7,7 @@ import httpx
 
 MEMPOOL_API_URL = "https://mempool.space/api"
 CBR_DAILY_RATES_URL = "https://www.cbr.ru/scripts/XML_daily.asp"
+CBR_BASE_CURRENCY = "RUB"
 
 
 def fetch_mempool_prices(timeout_s: float = 10.0) -> Dict[str, Any]:
@@ -58,7 +59,7 @@ def fetch_cbr_daily_rates(codes: Iterable[str] | None = None, timeout_s: float =
 
     root = ET.fromstring(payload)
     date = root.attrib.get("Date")
-    rates: Dict[str, float] = {"RUB": 1.0}
+    rates: Dict[str, float] = {CBR_BASE_CURRENCY: 1.0}
     for currency in root.findall("Valute"):
         char_code = (currency.findtext("CharCode") or "").strip().upper()
         if requested_codes and char_code not in requested_codes:
@@ -77,7 +78,7 @@ def fetch_cbr_daily_rates(codes: Iterable[str] | None = None, timeout_s: float =
     return {
         "provider": "cbr",
         "timestamp": date,
-        "base_currency": "RUB",
+        "base_currency": CBR_BASE_CURRENCY,
         "rates": rates,
     }
 
