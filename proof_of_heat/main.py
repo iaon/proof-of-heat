@@ -149,6 +149,15 @@ def _extract_whatsminer_current_power(summary: dict[str, Any]) -> tuple[float | 
     return None, None
 
 
+def _estimate_power_percent(current_power_w: float | None, baseline_power_w: float | None) -> int | None:
+    if current_power_w is None or current_power_w <= 0:
+        return None
+    if baseline_power_w is None or baseline_power_w <= 0:
+        return None
+    estimated = int(round((current_power_w / baseline_power_w) * 100))
+    return max(0, min(100, estimated))
+
+
 @dataclass
 class FixedSupplyTempRuntimeState:
     signature: tuple[Any, ...] | None = None
@@ -523,6 +532,7 @@ def _apply_fixed_supply_temp_heating_mode(
         effective_error_c = error_c + tolerance_c
 
     baseline_power_w = state.baseline_power_w or 0.0
+    reported_power_percent = _estimate_power_percent(current_power, state.baseline_power_w)
     min_percent = 0
     if baseline_power_w > 0 and min_power is not None and min_power > 0:
         min_percent = min(100, max(0, int(math.ceil((min_power / baseline_power_w) * 100))))
@@ -539,7 +549,7 @@ def _apply_fixed_supply_temp_heating_mode(
         )
     )
     logger.debug(
-        "Fixed supply temp control decision: raw=%.2fC corrected=%.2fC target=%.2fC error=%.2fC effective_error=%.2fC tolerance=%.2fC baseline_power_w=%.1f min_power=%r min_percent=%s desired_percent=%s last_percent=%r source=%r",
+        "Fixed supply temp control decision: raw=%.2fC corrected=%.2fC target=%.2fC error=%.2fC effective_error=%.2fC tolerance=%.2fC baseline_power_w=%.1f min_power=%r min_percent=%s desired_percent=%s reported_percent=%r last_percent=%r source=%r",
         measurement.raw_value_c,
         measured_supply_temp,
         target_supply_temp,
@@ -550,13 +560,18 @@ def _apply_fixed_supply_temp_heating_mode(
         min_power,
         min_percent,
         desired_percent,
+        reported_power_percent,
         state.last_power_percent,
         measurement.source,
     )
-    if state.last_power_percent == desired_percent:
+    if (
+        reported_power_percent is not None
+        and abs(reported_power_percent - desired_percent) <= 2
+    ):
         logger.info(
-            "Fixed supply temp mode keeping power_percent at %s%% (raw=%.2fC corrected=%.2fC target=%.2fC error=%.2fC source=%r)",
+            "Fixed supply temp mode keeping power_percent at %s%% (reported=%s%% raw=%.2fC corrected=%.2fC target=%.2fC error=%.2fC source=%r)",
             desired_percent,
+            reported_power_percent,
             measurement.raw_value_c,
             measured_supply_temp,
             target_supply_temp,
@@ -565,9 +580,24 @@ def _apply_fixed_supply_temp_heating_mode(
         )
         return None
 
+    if reported_power_percent is None:
+        logger.info(
+            "Fixed supply temp mode retrying power_percent=%s%% because reported percent is unavailable (last_requested=%r%%)",
+            desired_percent,
+            state.last_power_percent,
+        )
+    else:
+        logger.info(
+            "Fixed supply temp mode retrying power_percent=%s%% because reported percent is %s%% (last_requested=%r%%)",
+            desired_percent,
+            reported_power_percent,
+            state.last_power_percent,
+        )
+
     logger.info(
-        "Fixed supply temp mode updating power_percent from %s%% to %s%% (raw=%.2fC corrected=%.2fC target=%.2fC error=%.2fC source=%r)",
+        "Fixed supply temp mode updating power_percent from requested=%s%% reported=%s%% to desired=%s%% (raw=%.2fC corrected=%.2fC target=%.2fC error=%.2fC source=%r)",
         state.last_power_percent,
+        reported_power_percent,
         desired_percent,
         measurement.raw_value_c,
         measured_supply_temp,
@@ -576,6 +606,7 @@ def _apply_fixed_supply_temp_heating_mode(
         measurement.source,
     )
     response = miner.set_power_percent(desired_percent)
+    logger.debug("Fixed supply temp mode set_power_percent response: %r", response)
     if not _response_has_error(response):
         state.last_power_percent = desired_percent
     return response

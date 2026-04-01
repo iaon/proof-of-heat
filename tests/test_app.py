@@ -755,6 +755,126 @@ def test_fixed_supply_temp_mode_proceeds_after_calibration_request_even_if_repor
     assert state.last_power_percent == 52
 
 
+def test_fixed_supply_temp_mode_retries_when_reported_power_is_still_near_baseline():
+    DummyMiner.fetch_status_response = {
+        "code": 0,
+        "msg": {
+            "summary": {
+                "power-limit": 3600,
+                "up-freq-finish": 1,
+                "power-realtime": 3110,
+            }
+        },
+    }
+    DummyMiner.start_calls = 0
+    DummyMiner.set_power_percent_calls = []
+    state = main.FixedSupplyTempRuntimeState(
+        signature=("miner01", "miner.local", 4433, 3800, 1600),
+        normal_mode_requested=True,
+        calibration_requested=True,
+        calibration_complete=True,
+        baseline_power_w=3115,
+        last_power_percent=52,
+    )
+    miner = DummyMiner()
+
+    result = main._apply_fixed_supply_temp_heating_mode(
+        miner,
+        {
+            "devices": {
+                "whatsminer": [
+                    {
+                        "device_id": "miner01",
+                        "host": "miner.local",
+                        "max_power": 3800,
+                        "min_power": 1600,
+                    }
+                ]
+            },
+            "control_inputs": {"max_age_seconds": 180},
+            "heating_mode": {
+                "enabled": True,
+                "type": "fixed_supply_temp",
+                "params": {
+                    "target_supply_temp_c": 40.0,
+                    "tolerance_c": 2.0,
+                    "correction": 0.0,
+                },
+            },
+        },
+        {
+            "ts": int(main.datetime.now(main.timezone.utc).timestamp() * 1000),
+            "supply_temp": 45.7,
+            "supply_temp_source": "zont:12000:supply",
+        },
+        runtime_state=state,
+    )
+
+    assert result == {"power_percent": 52}
+    assert DummyMiner.set_power_percent_calls == [52]
+    assert state.last_power_percent == 52
+
+
+def test_fixed_supply_temp_mode_keeps_when_reported_power_matches_desired_percent():
+    DummyMiner.fetch_status_response = {
+        "code": 0,
+        "msg": {
+            "summary": {
+                "power-limit": 3600,
+                "up-freq-finish": 1,
+                "power-realtime": 1620,
+            }
+        },
+    }
+    DummyMiner.start_calls = 0
+    DummyMiner.set_power_percent_calls = []
+    state = main.FixedSupplyTempRuntimeState(
+        signature=("miner01", "miner.local", 4433, 3800, 1600),
+        normal_mode_requested=True,
+        calibration_requested=True,
+        calibration_complete=True,
+        baseline_power_w=3115,
+        last_power_percent=52,
+    )
+    miner = DummyMiner()
+
+    result = main._apply_fixed_supply_temp_heating_mode(
+        miner,
+        {
+            "devices": {
+                "whatsminer": [
+                    {
+                        "device_id": "miner01",
+                        "host": "miner.local",
+                        "max_power": 3800,
+                        "min_power": 1600,
+                    }
+                ]
+            },
+            "control_inputs": {"max_age_seconds": 180},
+            "heating_mode": {
+                "enabled": True,
+                "type": "fixed_supply_temp",
+                "params": {
+                    "target_supply_temp_c": 40.0,
+                    "tolerance_c": 2.0,
+                    "correction": 0.0,
+                },
+            },
+        },
+        {
+            "ts": int(main.datetime.now(main.timezone.utc).timestamp() * 1000),
+            "supply_temp": 45.7,
+            "supply_temp_source": "zont:12000:supply",
+        },
+        runtime_state=state,
+    )
+
+    assert result is None
+    assert DummyMiner.set_power_percent_calls == []
+    assert state.last_power_percent == 52
+
+
 def test_fixed_supply_temp_mode_skips_when_supply_temp_is_missing():
     DummyMiner.fetch_status_response = {
         "code": 0,
