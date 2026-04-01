@@ -18,6 +18,10 @@ class Miner(ABC):
         """Adjust miner power output (watts)."""
 
     @abstractmethod
+    def set_power_percent(self, percent: int) -> Dict[str, Any]:
+        """Adjust miner power as a percentage of the calibrated baseline."""
+
+    @abstractmethod
     def stop(self) -> Dict[str, Any]:
         """Stop the miner."""
 

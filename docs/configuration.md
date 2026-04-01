@@ -242,14 +242,17 @@ Supported modes:
 - `fixed_supply_temp`
   - required `params.target_supply_temp_c`
   - optional `params.tolerance_c`, default `1.0`
+  - optional `params.correction`, default `0.0`
+  - uses the resolved `control_inputs.supply_temp` value as the sensor input
 - `room_target`
   - required `params.target_room_temp_c`
 
 Current status:
 
 - The configuration schema is available now.
+- `fixed_power` and `fixed_supply_temp` have runtime control loops.
+- `fixed_supply_temp` first sets the miner `power_limit` to device `max_power`, waits for `up-freq-finish`, records the resulting actual miner power as the `100%` baseline, and then regulates output through `set.miner.power_percent`.
 - Existing runtime control routes still use the legacy `mode` and `target_temperature_c` fields.
-- Future control logic should read `heating_mode` as the source of truth.
 
 ## Source of Truth
 

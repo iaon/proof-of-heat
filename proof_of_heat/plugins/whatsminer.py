@@ -80,6 +80,9 @@ class Whatsminer(Miner):
     def set_power_limit(self, watts: int) -> Dict[str, Any]:
         return self._call("set.miner.power_limit", param=watts)
 
+    def set_power_percent(self, percent: int) -> Dict[str, Any]:
+        return self._call("set.miner.power_percent", param=percent)
+
     def stop(self) -> Dict[str, Any]:
         return self._call("set.miner.power_mode", param=2)
 

@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from html import escape
 from pathlib import Path
@@ -76,6 +78,7 @@ HEATING_CURVE_DEFAULTS: Dict[str, Any] = {
     "min_supply_temp_c": 25.0,
     "max_supply_temp_c": 60.0,
 }
+FIXED_SUPPLY_TEMP_PERCENT_PER_C = 15.0
 
 try:  # Lazy import to allow a diagnostic ASGI fallback if dependencies are missing
     from apscheduler.schedulers.background import BackgroundScheduler
@@ -127,6 +130,36 @@ def _safe_int(value: Any) -> int | None:
         return None
 
 
+def _safe_float(value: Any) -> float | None:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _response_has_error(response: Any) -> bool:
+    return isinstance(response, dict) and bool(response.get("error"))
+
+
+@dataclass
+class FixedSupplyTempRuntimeState:
+    signature: tuple[Any, ...] | None = None
+    normal_mode_requested: bool = False
+    calibration_complete: bool = False
+    baseline_power_w: float | None = None
+    last_power_percent: int | None = None
+
+    def reset(self, signature: tuple[Any, ...] | None = None) -> None:
+        self.signature = signature
+        self.normal_mode_requested = False
+        self.calibration_complete = False
+        self.baseline_power_w = None
+        self.last_power_percent = None
+
+
+_FIXED_SUPPLY_TEMP_RUNTIME_STATE = FixedSupplyTempRuntimeState()
+
+
 def _resolve_control_interval_seconds(settings_data: Dict[str, Any]) -> int:
     if not isinstance(settings_data, dict):
         return 30
@@ -140,21 +173,26 @@ def _resolve_control_interval_seconds(settings_data: Dict[str, Any]) -> int:
     return max(1, interval)
 
 
+def _get_primary_whatsminer_device_config(settings_data: Dict[str, Any]) -> Dict[str, Any] | None:
+    if not isinstance(settings_data, dict):
+        return None
+    devices = settings_data.get("devices")
+    if not isinstance(devices, dict):
+        return None
+    whatsminers = devices.get("whatsminer")
+    if not isinstance(whatsminers, list) or not whatsminers:
+        return None
+    device = whatsminers[0]
+    return device if isinstance(device, dict) else None
+
+
 def _build_whatsminer_from_settings(settings_data: Dict[str, Any]) -> Any | None:
     if not isinstance(settings_data, dict):
         logger.debug("Fixed power mode skipped: settings payload is not a mapping")
         return None
-    devices = settings_data.get("devices")
-    if not isinstance(devices, dict):
-        logger.debug("Fixed power mode skipped: devices section is missing or invalid")
-        return None
-    whatsminers = devices.get("whatsminer")
-    if not isinstance(whatsminers, list) or not whatsminers:
-        logger.debug("Fixed power mode skipped: no whatsminer devices configured")
-        return None
-    device = whatsminers[0]
-    if not isinstance(device, dict):
-        logger.warning("Fixed power mode skipped: first whatsminer device config is invalid")
+    device = _get_primary_whatsminer_device_config(settings_data)
+    if device is None:
+        logger.debug("Fixed power mode skipped: no valid whatsminer device configured")
         return None
     kwargs: Dict[str, Any] = {
         "host": device.get("host"),
@@ -242,12 +280,244 @@ def _apply_fixed_power_heating_mode(miner: Any, settings_data: Dict[str, Any]) -
     return miner.set_power_limit(target_power)
 
 
-def _run_heating_mode_control() -> None:
+def _build_fixed_supply_temp_signature(device: Dict[str, Any]) -> tuple[Any, ...]:
+    return (
+        str(device.get("device_id") or ""),
+        str(device.get("host") or ""),
+        _safe_int(device.get("port")) or config_defaults_port(),
+        _safe_int(device.get("max_power")),
+        _safe_int(device.get("min_power")),
+    )
+
+
+def _resolve_control_inputs_max_age_ms(settings_data: Dict[str, Any]) -> int | None:
+    if not isinstance(settings_data, dict):
+        return None
+    control_inputs = settings_data.get("control_inputs")
+    if not isinstance(control_inputs, dict):
+        return None
+    max_age_seconds = _safe_int(control_inputs.get("max_age_seconds"))
+    if max_age_seconds is None or max_age_seconds < 0:
+        return None
+    return max_age_seconds * 1000
+
+
+def _resolve_fixed_supply_temp_measurement(
+    settings_data: Dict[str, Any],
+    control_inputs: Dict[str, Any] | None,
+    correction: float,
+) -> float | None:
+    if not isinstance(control_inputs, dict):
+        logger.debug("Fixed supply temp mode skipped: latest control inputs unavailable")
+        return None
+    supply_temp = _safe_float(control_inputs.get("supply_temp"))
+    if supply_temp is None:
+        logger.debug("Fixed supply temp mode skipped: supply_temp is unavailable in control inputs")
+        return None
+
+    max_age_ms = _resolve_control_inputs_max_age_ms(settings_data)
+    ts_ms = _safe_int(control_inputs.get("ts"))
+    if max_age_ms is not None and ts_ms is not None:
+        now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+        if now_ms - ts_ms > max_age_ms:
+            logger.debug(
+                "Fixed supply temp mode skipped: latest control inputs are stale (age=%sms, max=%sms)",
+                now_ms - ts_ms,
+                max_age_ms,
+            )
+            return None
+
+    return supply_temp + correction
+
+
+def _apply_fixed_supply_temp_heating_mode(
+    miner: Any,
+    settings_data: Dict[str, Any],
+    control_inputs: Dict[str, Any] | None,
+    runtime_state: FixedSupplyTempRuntimeState | None = None,
+) -> Dict[str, Any] | None:
+    if not isinstance(settings_data, dict):
+        logger.debug("Fixed supply temp mode skipped: settings payload is not a mapping")
+        return None
+    heating_mode = settings_data.get("heating_mode")
+    if not isinstance(heating_mode, dict):
+        logger.debug("Fixed supply temp mode skipped: heating_mode section is missing or invalid")
+        return None
+    if heating_mode.get("enabled", True) is False:
+        logger.debug("Fixed supply temp mode skipped: heating_mode is disabled")
+        return None
+    if heating_mode.get("type") != "fixed_supply_temp":
+        logger.debug(
+            "Fixed supply temp mode skipped: active heating_mode type is %r",
+            heating_mode.get("type"),
+        )
+        return None
+
+    params = heating_mode.get("params")
+    if not isinstance(params, dict):
+        logger.warning("Fixed supply temp mode skipped: params section is missing or invalid")
+        return None
+
+    target_supply_temp = _safe_float(params.get("target_supply_temp_c"))
+    if target_supply_temp is None:
+        logger.warning(
+            "Fixed supply temp mode skipped: params.target_supply_temp_c is missing or invalid"
+        )
+        return None
+    tolerance_c = _safe_float(params.get("tolerance_c"))
+    tolerance_c = max(0.0, tolerance_c if tolerance_c is not None else 1.0)
+    correction = _safe_float(params.get("correction")) or 0.0
+
+    device = _get_primary_whatsminer_device_config(settings_data)
+    if device is None:
+        logger.warning("Fixed supply temp mode skipped: no valid whatsminer device configured")
+        return None
+    max_power = _safe_int(device.get("max_power"))
+    if max_power is None or max_power <= 0:
+        logger.warning("Fixed supply temp mode skipped: whatsminer max_power is missing or invalid")
+        return None
+    min_power = _safe_float(device.get("min_power"))
+    if min_power is not None and min_power < 0:
+        min_power = None
+
+    state = runtime_state or _FIXED_SUPPLY_TEMP_RUNTIME_STATE
+    signature = _build_fixed_supply_temp_signature(device)
+    if state.signature != signature:
+        logger.info("Fixed supply temp mode resetting runtime state for device %s", device.get("device_id"))
+        state.reset(signature)
+
+    if not state.normal_mode_requested:
+        logger.info("Fixed supply temp mode switching miner to normal mode")
+        response = miner.start()
+        if not _response_has_error(response):
+            state.normal_mode_requested = True
+        return response
+
+    status = miner.fetch_status()
+    logger.debug("Fixed supply temp mode raw miner status: %r", status)
+    summary = _extract_whatsminer_summary(status)
+    if summary is None:
+        logger.warning(
+            "Fixed supply temp mode skipped: unable to extract Whatsminer summary from status response"
+        )
+        return None
+
+    current_power_limit = _safe_int(summary.get("power-limit"))
+    up_freq_finish = _safe_int(summary.get("up-freq-finish"))
+    current_power = _safe_float(summary.get("power"))
+
+    if current_power_limit != max_power:
+        logger.info(
+            "Fixed supply temp mode setting miner power limit to calibration max %sW (current=%r)",
+            max_power,
+            current_power_limit,
+        )
+        state.calibration_complete = False
+        state.baseline_power_w = None
+        state.last_power_percent = None
+        return miner.set_power_limit(max_power)
+
+    if up_freq_finish != 1:
+        logger.debug(
+            "Fixed supply temp mode waiting for frequency ramp to complete: up-freq-finish=%r",
+            up_freq_finish,
+        )
+        return None
+
+    if not state.calibration_complete:
+        if current_power is None or current_power <= 0:
+            logger.warning(
+                "Fixed supply temp mode skipped: summary does not contain a valid current power for calibration"
+            )
+            return None
+        state.calibration_complete = True
+        state.baseline_power_w = current_power
+        state.last_power_percent = 100
+        logger.info(
+            "Fixed supply temp mode captured baseline power %.1fW as 100%%",
+            current_power,
+        )
+
+    measured_supply_temp = _resolve_fixed_supply_temp_measurement(
+        settings_data=settings_data,
+        control_inputs=control_inputs,
+        correction=correction,
+    )
+    if measured_supply_temp is None:
+        return None
+
+    error_c = target_supply_temp - measured_supply_temp
+    if abs(error_c) <= tolerance_c:
+        logger.debug(
+            "Fixed supply temp mode within tolerance: measured=%.2fC target=%.2fC tolerance=%.2fC",
+            measured_supply_temp,
+            target_supply_temp,
+            tolerance_c,
+        )
+        return None
+
+    if error_c > tolerance_c:
+        effective_error_c = error_c - tolerance_c
+    else:
+        effective_error_c = error_c + tolerance_c
+
+    baseline_power_w = state.baseline_power_w or 0.0
+    min_percent = 0
+    if baseline_power_w > 0 and min_power is not None and min_power > 0:
+        min_percent = min(100, max(0, int(math.ceil((min_power / baseline_power_w) * 100))))
+
+    desired_percent = int(
+        round(
+            max(
+                min_percent,
+                min(
+                    100.0,
+                    100.0 + (effective_error_c * FIXED_SUPPLY_TEMP_PERCENT_PER_C),
+                ),
+            )
+        )
+    )
+    if state.last_power_percent == desired_percent:
+        logger.debug(
+            "Fixed supply temp mode skipped: power_percent already set to %s%%",
+            desired_percent,
+        )
+        return None
+
+    logger.info(
+        "Fixed supply temp mode updating power_percent from %s%% to %s%% (supply=%.2fC corrected, target=%.2fC)",
+        state.last_power_percent,
+        desired_percent,
+        measured_supply_temp,
+        target_supply_temp,
+    )
+    response = miner.set_power_percent(desired_percent)
+    if not _response_has_error(response):
+        state.last_power_percent = desired_percent
+    return response
+
+
+def _clear_fixed_supply_temp_runtime_state() -> None:
+    _FIXED_SUPPLY_TEMP_RUNTIME_STATE.reset()
+
+
+def _run_heating_mode_control(device_poller: Any | None = None) -> None:
     try:
         logger.debug("Heating mode control tick started")
         settings_data = parse_settings_yaml(load_settings_yaml())
+        heating_mode = settings_data.get("heating_mode") if isinstance(settings_data, dict) else None
+        mode_enabled = not isinstance(heating_mode, dict) or heating_mode.get("enabled", True) is not False
+        mode_type = heating_mode.get("type") if isinstance(heating_mode, dict) else None
+        if not mode_enabled or mode_type != "fixed_supply_temp":
+            _clear_fixed_supply_temp_runtime_state()
         miner = _build_whatsminer_from_settings(settings_data)
         if miner is None:
+            return
+        if mode_enabled and mode_type == "fixed_supply_temp":
+            control_inputs = None
+            if device_poller is not None and hasattr(device_poller, "get_latest_control_inputs"):
+                control_inputs = device_poller.get_latest_control_inputs()
+            _apply_fixed_supply_temp_heating_mode(miner, settings_data, control_inputs)
             return
         _apply_fixed_power_heating_mode(miner, settings_data)
     except Exception:  # pragma: no cover - defensive logging
@@ -293,11 +563,12 @@ def create_app(config: AppConfig = DEFAULT_CONFIG) -> FastAPI:
             control_scheduler.add_job(
                 _run_heating_mode_control,
                 trigger=IntervalTrigger(seconds=_resolve_control_interval_seconds(settings_data)),
+                args=[device_poller],
                 id="heating-mode-control",
                 replace_existing=True,
             )
             control_scheduler.start()
-            _run_heating_mode_control()
+            _run_heating_mode_control(device_poller)
             yield
         finally:
             device_poller.shutdown()

@@ -36,6 +36,10 @@ class FixedPowerHeatingParams(BaseModel):
 class FixedSupplyTempHeatingParams(BaseModel):
     target_supply_temp_c: float = Field(description="Target supply temperature in Celsius.")
     tolerance_c: float = Field(default=1.0, description="Allowed supply temperature deviation in Celsius.")
+    correction: float = Field(
+        default=0.0,
+        description="Additional correction applied to the resolved supply temperature input.",
+    )
 
 
 class RoomTargetHeatingParams(BaseModel):

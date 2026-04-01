@@ -63,6 +63,7 @@ def test_heating_mode_supports_fixed_supply_temp():
     assert config.type == "fixed_supply_temp"
     assert config.params.target_supply_temp_c == 42.0
     assert config.params.tolerance_c == 1.0
+    assert config.params.correction == 0.0
 
 
 def test_app_config_includes_heating_mode():

@@ -12,6 +12,8 @@ from proof_of_heat.config import AppConfig
 class DummyMiner:
     fetch_status_response = {"power": 1000, "fan_speed": 60}
     set_power_limit_calls = []
+    set_power_percent_calls = []
+    start_calls = 0
     init_kwargs = []
 
     def __init__(self, *args, **kwargs):
@@ -25,7 +27,12 @@ class DummyMiner:
         self.set_power_limit_calls.append(watts)
         return {"power_limit": watts}
 
+    def set_power_percent(self, percent: int):
+        self.set_power_percent_calls.append(percent)
+        return {"power_percent": percent}
+
     def start(self):
+        type(self).start_calls += 1
         return {"status": "started"}
 
     def stop(self):
@@ -124,7 +131,10 @@ def build_routes(tmp_path, monkeypatch, parsed_settings=None, latest_payloads=No
     }
     DummyMiner.fetch_status_response = {"power": 1000, "fan_speed": 60}
     DummyMiner.set_power_limit_calls = []
+    DummyMiner.set_power_percent_calls = []
+    DummyMiner.start_calls = 0
     DummyMiner.init_kwargs = []
+    main._clear_fixed_supply_temp_runtime_state()
 
     def save_settings(raw_yaml):
         parsed = yaml.safe_load(raw_yaml) or {}
@@ -470,6 +480,217 @@ def test_fixed_power_mode_waits_until_up_freq_finish():
 
     assert result is None
     assert DummyMiner.set_power_limit_calls == []
+
+
+def test_fixed_supply_temp_mode_switches_to_normal_mode_before_calibration():
+    DummyMiner.start_calls = 0
+    DummyMiner.set_power_limit_calls = []
+    DummyMiner.set_power_percent_calls = []
+    state = main.FixedSupplyTempRuntimeState()
+    miner = DummyMiner()
+
+    result = main._apply_fixed_supply_temp_heating_mode(
+        miner,
+        {
+            "devices": {
+                "whatsminer": [
+                    {
+                        "device_id": "miner01",
+                        "host": "miner.local",
+                        "max_power": 3800,
+                        "min_power": 1000,
+                    }
+                ]
+            },
+            "control_inputs": {"max_age_seconds": 180},
+            "heating_mode": {
+                "enabled": True,
+                "type": "fixed_supply_temp",
+                "params": {
+                    "target_supply_temp_c": 42.0,
+                    "tolerance_c": 1.0,
+                    "correction": 0.0,
+                },
+            },
+        },
+        {"ts": 1, "supply_temp": 40.0},
+        runtime_state=state,
+    )
+
+    assert result == {"status": "started"}
+    assert DummyMiner.start_calls == 1
+    assert state.normal_mode_requested is True
+    assert DummyMiner.set_power_limit_calls == []
+    assert DummyMiner.set_power_percent_calls == []
+
+
+def test_fixed_supply_temp_mode_sets_calibration_power_limit():
+    DummyMiner.fetch_status_response = {
+        "code": 0,
+        "msg": {
+            "summary": {
+                "power-limit": 3200,
+                "up-freq-finish": 0,
+                "power": 2500,
+            }
+        },
+    }
+    DummyMiner.set_power_limit_calls = []
+    DummyMiner.set_power_percent_calls = []
+    DummyMiner.start_calls = 0
+    state = main.FixedSupplyTempRuntimeState(
+        signature=("miner01", "miner.local", 4433, 3800, 1000),
+        normal_mode_requested=True,
+    )
+    miner = DummyMiner()
+
+    result = main._apply_fixed_supply_temp_heating_mode(
+        miner,
+        {
+            "devices": {
+                "whatsminer": [
+                    {
+                        "device_id": "miner01",
+                        "host": "miner.local",
+                        "max_power": 3800,
+                        "min_power": 1000,
+                    }
+                ]
+            },
+            "control_inputs": {"max_age_seconds": 180},
+            "heating_mode": {
+                "enabled": True,
+                "type": "fixed_supply_temp",
+                "params": {
+                    "target_supply_temp_c": 42.0,
+                    "tolerance_c": 1.0,
+                    "correction": 0.0,
+                },
+            },
+        },
+        {"ts": 1, "supply_temp": 40.0},
+        runtime_state=state,
+    )
+
+    assert result == {"power_limit": 3800}
+    assert DummyMiner.set_power_limit_calls == [3800]
+    assert DummyMiner.set_power_percent_calls == []
+    assert state.calibration_complete is False
+    assert state.baseline_power_w is None
+
+
+def test_fixed_supply_temp_mode_captures_baseline_and_updates_power_percent():
+    DummyMiner.fetch_status_response = {
+        "code": 0,
+        "msg": {
+            "summary": {
+                "power-limit": 3800,
+                "up-freq-finish": 1,
+                "power": 3000,
+            }
+        },
+    }
+    DummyMiner.start_calls = 0
+    DummyMiner.set_power_percent_calls = []
+    state = main.FixedSupplyTempRuntimeState(
+        signature=("miner01", "miner.local", 4433, 3800, 1000),
+        normal_mode_requested=True,
+    )
+    miner = DummyMiner()
+
+    result = main._apply_fixed_supply_temp_heating_mode(
+        miner,
+        {
+            "devices": {
+                "whatsminer": [
+                    {
+                        "device_id": "miner01",
+                        "host": "miner.local",
+                        "max_power": 3800,
+                        "min_power": 1000,
+                    }
+                ]
+            },
+            "control_inputs": {"max_age_seconds": 180},
+            "heating_mode": {
+                "enabled": True,
+                "type": "fixed_supply_temp",
+                "params": {
+                    "target_supply_temp_c": 40.0,
+                    "tolerance_c": 1.0,
+                    "correction": -2.0,
+                },
+            },
+        },
+        {
+            "ts": int(main.datetime.now(main.timezone.utc).timestamp() * 1000),
+            "supply_temp": 45.0,
+        },
+        runtime_state=state,
+    )
+
+    assert result == {"power_percent": 70}
+    assert state.calibration_complete is True
+    assert state.baseline_power_w == 3000
+    assert state.last_power_percent == 70
+    assert DummyMiner.set_power_percent_calls == [70]
+
+
+def test_fixed_supply_temp_mode_skips_when_supply_temp_is_missing():
+    DummyMiner.fetch_status_response = {
+        "code": 0,
+        "msg": {
+            "summary": {
+                "power-limit": 3800,
+                "up-freq-finish": 1,
+                "power": 2800,
+            }
+        },
+    }
+    DummyMiner.start_calls = 0
+    DummyMiner.set_power_percent_calls = []
+    state = main.FixedSupplyTempRuntimeState(
+        signature=("miner01", "miner.local", 4433, 3800, 1000),
+        normal_mode_requested=True,
+        calibration_complete=True,
+        baseline_power_w=3000,
+        last_power_percent=80,
+    )
+    miner = DummyMiner()
+
+    result = main._apply_fixed_supply_temp_heating_mode(
+        miner,
+        {
+            "devices": {
+                "whatsminer": [
+                    {
+                        "device_id": "miner01",
+                        "host": "miner.local",
+                        "max_power": 3800,
+                        "min_power": 1000,
+                    }
+                ]
+            },
+            "control_inputs": {"max_age_seconds": 180},
+            "heating_mode": {
+                "enabled": True,
+                "type": "fixed_supply_temp",
+                "params": {
+                    "target_supply_temp_c": 40.0,
+                    "tolerance_c": 1.0,
+                    "correction": 0.0,
+                },
+            },
+        },
+        {
+            "ts": int(main.datetime.now(main.timezone.utc).timestamp() * 1000),
+            "supply_temp": None,
+        },
+        runtime_state=state,
+    )
+
+    assert result is None
+    assert DummyMiner.set_power_percent_calls == []
 
 
 def test_run_heating_mode_control_uses_first_whatsminer_device_config(monkeypatch):
