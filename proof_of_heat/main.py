@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from html import escape
 from pathlib import Path
@@ -281,34 +282,34 @@ def create_app(config: AppConfig = DEFAULT_CONFIG) -> FastAPI:
     app.state.device_poller = device_poller
     control_scheduler: BackgroundScheduler | None = None
 
+    @asynccontextmanager
+    async def lifespan(app_instance: FastAPI):
+        nonlocal control_scheduler
+        route_paths = sorted({route.path for route in app_instance.router.routes})
+        logger.info("Available routes: %s", ", ".join(route_paths))
+        try:
+            device_poller.start()
+            control_scheduler = BackgroundScheduler()
+            control_scheduler.add_job(
+                _run_heating_mode_control,
+                trigger=IntervalTrigger(seconds=_resolve_control_interval_seconds(settings_data)),
+                id="heating-mode-control",
+                replace_existing=True,
+            )
+            control_scheduler.start()
+            _run_heating_mode_control()
+            yield
+        finally:
+            device_poller.shutdown()
+            if control_scheduler:
+                control_scheduler.shutdown(wait=False)
+                control_scheduler = None
+
+    app.router.lifespan_context = lifespan
+
     @app.get("/health")
     def health() -> Dict[str, str]:
         return {"status": "ok"}
-
-    @app.on_event("startup")
-    async def log_routes() -> None:
-        route_paths = sorted({route.path for route in app.router.routes})
-        logger.info("Available routes: %s", ", ".join(route_paths))
-
-    @app.on_event("startup")
-    async def start_device_polling() -> None:
-        nonlocal control_scheduler
-        device_poller.start()
-        control_scheduler = BackgroundScheduler()
-        control_scheduler.add_job(
-            _run_heating_mode_control,
-            trigger=IntervalTrigger(seconds=_resolve_control_interval_seconds(settings_data)),
-            id="heating-mode-control",
-            replace_existing=True,
-        )
-        control_scheduler.start()
-        _run_heating_mode_control()
-
-    @app.on_event("shutdown")
-    async def stop_device_polling() -> None:
-        device_poller.shutdown()
-        if control_scheduler:
-            control_scheduler.shutdown(wait=False)
 
     @app.get("/debug/routes")
     def debug_routes() -> Dict[str, Any]:
