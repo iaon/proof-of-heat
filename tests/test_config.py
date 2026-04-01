@@ -82,8 +82,8 @@ def test_default_settings_yaml_includes_economics():
         },
         "exchange_rate": {
             "integrations": {
-                "btc_usd": "mempool_space",
-                "usd_rub": "cbr",
+                "crypto_usd": "mempool_space",
+                "usd_fiat": "cbr",
             },
             "refresh_interval": 3600,
             "stale_after": 7200,

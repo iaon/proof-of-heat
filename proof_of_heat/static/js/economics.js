@@ -19,52 +19,17 @@ const ctx = document.getElementById("chart").getContext("2d");
 const presetButtons = Array.from(document.querySelectorAll(".preset-btn"));
 const STORAGE_KEY = "proof_of_heat_economics_view_v1";
 const palette = ["#2563eb", "#dc2626", "#16a34a", "#7c3aed", "#ea580c", "#0891b2", "#db2777", "#0f766e"];
-const METRIC_PRESETS = {
-    rates: [
-        "exchange_rate_btc_usd",
-        "exchange_rate_usd_rub",
-        "exchange_rate_btc_rub",
-    ],
-    profitability: [
-        "hashprice_btc_th_day",
-        "hashprice_rub_th_day",
-        "hashcost_btc_th_day",
-        "hashcost_rub_th_day",
-    ],
-    market: [
-        "network_hashrate_th_s",
-        "avg_block_reward_btc",
-        "electricity_price_rub_kwh",
-    ],
-};
-const KNOWN_METRICS = [
-    "exchange_rate_btc_usd",
-    "exchange_rate_usd_rub",
-    "exchange_rate_btc_rub",
-    "network_hashrate_th_s",
-    "avg_block_reward_btc",
-    "hashprice_btc_th_day",
-    "hashprice_rub_th_day",
-    "electricity_price_rub_kwh",
-    "hashcost_rub_th_day",
-    "hashcost_btc_th_day",
-];
-const CURRENT_METRICS_ORDER = [
-    "exchange_rate_btc_usd",
-    "exchange_rate_usd_rub",
-    "exchange_rate_btc_rub",
-    "network_hashrate_th_s",
-    "avg_block_reward_btc",
-    "hashprice_btc_th_day",
-    "hashprice_rub_th_day",
-    "electricity_price_rub_kwh",
-    "hashcost_rub_th_day",
-    "hashcost_btc_th_day",
-];
 
 let chart;
 let metricRowSeq = 0;
-let availableMetrics = [...KNOWN_METRICS];
+let availableMetrics = [];
+let catalogData = {
+    enabled: true,
+    currencies: { crypto: "BTC", fiat: "RUB" },
+    current_metrics: [],
+    labels: {},
+    presets: {},
+};
 const metricRows = [];
 
 function prettifyMetricName(name) {
@@ -72,19 +37,26 @@ function prettifyMetricName(name) {
 }
 
 function describeEconomicsMetric(metricName) {
-    const labels = {
-        exchange_rate_btc_usd: "BTC price in USD",
-        exchange_rate_usd_rub: "USD to RUB exchange rate",
-        exchange_rate_btc_rub: "BTC price in RUB",
-        network_hashrate_th_s: "Network hashrate in TH/s",
-        avg_block_reward_btc: "Average block reward in BTC",
-        hashprice_btc_th_day: "Hashprice in BTC per TH per day",
-        hashprice_rub_th_day: "Hashprice in RUB per TH per day",
-        electricity_price_rub_kwh: "Electricity price in RUB per kWh",
-        hashcost_rub_th_day: "Electricity cost in RUB per TH per day",
-        hashcost_btc_th_day: "Electricity cost in BTC per TH per day",
-    };
-    return labels[metricName] || prettifyMetricName(metricName);
+    if (!metricName) return "—";
+    return catalogData.labels[metricName] || prettifyMetricName(metricName);
+}
+
+function getCurrentMetricsOrder() {
+    const configured = Array.isArray(catalogData.current_metrics) ? catalogData.current_metrics : [];
+    return configured.length ? configured : availableMetrics;
+}
+
+function getPresetMetrics(name) {
+    const preset = catalogData.presets[name];
+    return Array.isArray(preset && preset.metrics) ? preset.metrics : [];
+}
+
+function renderPresetLabels() {
+    presetButtons.forEach((button) => {
+        const presetName = button.getAttribute("data-preset");
+        const preset = catalogData.presets[presetName];
+        if (preset && preset.label) button.textContent = preset.label;
+    });
 }
 
 function formatCurrentMetricValue(metricName, value) {
@@ -218,20 +190,13 @@ function updateRowInfo(row) {
     row.humanEl.textContent = describeEconomicsMetric(metricName);
 }
 
-function selectMetricForRow(row, value, options = {}) {
-    const { force = false } = options;
+function selectMetricForRow(row, value) {
     const selected = row.options.find((item) => item.value === value);
     if (!selected) {
-        if (force && value) {
-            row.metricValueEl.value = value;
-            row.searchEl.value = value;
-            updateRowInfo(row);
-            renderRowDropdown(row, row.searchEl.value);
-            return;
-        }
         row.metricValueEl.value = "";
         row.searchEl.value = "";
         updateRowInfo(row);
+        renderRowDropdown(row, row.searchEl.value);
         return;
     }
     row.metricValueEl.value = selected.value;
@@ -260,7 +225,7 @@ function collectSelectedSeries() {
     return metricRows
         .map((row) => ({
             metric: row.metricValueEl.value,
-            label: row.searchEl.value || row.metricValueEl.value,
+            label: describeEconomicsMetric(row.metricValueEl.value),
         }))
         .filter((item) => Boolean(item.metric));
 }
@@ -277,7 +242,7 @@ function createMetricRow(initialState = null) {
                 <input id="metric-value-${rowId}" type="hidden" />
                 <div id="metric-dropdown-${rowId}" class="metric-dropdown" hidden></div>
             </div>
-            <button id="metric-remove-${rowId}" type="button" class="metric-remove">−</button>
+            <button id="metric-remove-${rowId}" type="button" class="metric-remove">-</button>
         </div>
         <div class="metric-meta">
             <div>Full DB metric name: <code id="metric-full-name-${rowId}">—</code></div>
@@ -348,18 +313,25 @@ function clearMetricRows() {
 }
 
 function renderCurrentValues(data, polledAt, errors) {
+    const currencies = catalogData.currencies || {};
+    const currenciesText = currencies.crypto && currencies.fiat
+        ? `Currencies: ${currencies.crypto}/${currencies.fiat}`
+        : "";
+    const updateText = polledAt ? `Last update: ${polledAt}` : "";
     currentEl.innerHTML = "";
-    currentMetaEl.textContent = polledAt ? `Last update: ${polledAt}` : "";
-    currentErrorsEl.textContent = Array.isArray(errors) && errors.length ? `Warnings: ${errors.join(" | ")}` : "";
+    currentMetaEl.textContent = [currenciesText, updateText].filter(Boolean).join(" · ");
+
+    const warnings = [];
+    if (catalogData.enabled === false) warnings.push("Economics is disabled in config.");
+    if (Array.isArray(errors) && errors.length) warnings.push(`Warnings: ${errors.join(" | ")}`);
+    currentErrorsEl.textContent = warnings.join(" ");
 
     if (!data || typeof data !== "object") {
-        currentMetaEl.textContent = "";
-        currentErrorsEl.textContent = "";
         currentEl.innerHTML = '<p class="muted">No economics data yet.</p>';
         return;
     }
 
-    const fields = CURRENT_METRICS_ORDER.filter((key) => data[key] !== undefined && data[key] !== null);
+    const fields = getCurrentMetricsOrder().filter((key) => data[key] !== undefined && data[key] !== null);
     if (!fields.length) {
         currentEl.innerHTML = '<p class="muted">No economics values available yet.</p>';
         return;
@@ -471,14 +443,16 @@ async function loadChart() {
 async function loadCatalog() {
     const res = await fetch(apiUrl("/api/economics/catalog"));
     const payload = await res.json();
-    const fetched = Array.isArray(payload.metrics) ? payload.metrics : [];
-    availableMetrics = Array.from(new Set([...KNOWN_METRICS, ...fetched]));
+    catalogData = payload && typeof payload === "object" ? payload : catalogData;
+    const metrics = Array.isArray(catalogData.metrics) ? catalogData.metrics : [];
+    availableMetrics = Array.from(new Set(metrics));
+    renderPresetLabels();
     metricRows.forEach((row) => loadMetricsForRow(row));
 }
 
 async function applyPreset(name) {
-    const metrics = METRIC_PRESETS[name];
-    if (!Array.isArray(metrics) || !metrics.length) return;
+    const metrics = getPresetMetrics(name);
+    if (!metrics.length) return;
     clearMetricRows();
     metrics.forEach((metric) => createMetricRow({ metric }));
     await restoreRowsFromState();
@@ -490,8 +464,8 @@ async function restoreRowsFromState() {
     for (const row of metricRows) {
         const initial = row.initialState || {};
         loadMetricsForRow(row);
-        if (initial.metric) {
-            selectMetricForRow(row, initial.metric, { force: true });
+        if (initial.metric && row.options.some((item) => item.value === initial.metric)) {
+            selectMetricForRow(row, initial.metric);
         }
     }
 }

@@ -464,11 +464,8 @@ def create_app(config: AppConfig = DEFAULT_CONFIG) -> FastAPI:
 
     @app.get("/api/economics/catalog")
     @app.get("/api/economics/catalog/")
-    def get_economics_catalog() -> Dict[str, list[str]]:
-        catalog = device_poller.get_metric_catalog()
-        economics = catalog.get("economics") if isinstance(catalog, dict) else None
-        metrics = economics.get("market") if isinstance(economics, dict) else None
-        return {"metrics": metrics if isinstance(metrics, list) else []}
+    def get_economics_catalog() -> Dict[str, Any]:
+        return device_poller.get_economics_metadata()
 
     @app.get("/api/economics/data")
     @app.get("/api/economics/data/")

@@ -97,8 +97,8 @@ economics:
     fiat: RUB
   exchange_rate:
     integrations:
-      btc_usd: mempool_space
-      usd_rub: cbr
+      crypto_usd: mempool_space
+      usd_fiat: cbr
     refresh_interval: 3600
     stale_after: 7200
   hashprice:

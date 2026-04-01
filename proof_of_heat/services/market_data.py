@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import xml.etree.ElementTree as ET
-from typing import Any, Dict
+from typing import Any, Dict, Iterable
 
 import httpx
 
@@ -45,7 +45,12 @@ def fetch_mempool_reward_stats(block_count: int = 144, timeout_s: float = 10.0) 
     }
 
 
-def fetch_cbr_daily_usd_rub(timeout_s: float = 10.0) -> Dict[str, Any]:
+def fetch_cbr_daily_rates(codes: Iterable[str] | None = None, timeout_s: float = 10.0) -> Dict[str, Any]:
+    requested_codes = {
+        str(code).strip().upper()
+        for code in (codes or [])
+        if str(code).strip()
+    }
     with httpx.Client(timeout=timeout_s) as client:
         response = client.get(CBR_DAILY_RATES_URL)
         response.raise_for_status()
@@ -53,23 +58,28 @@ def fetch_cbr_daily_usd_rub(timeout_s: float = 10.0) -> Dict[str, Any]:
 
     root = ET.fromstring(payload)
     date = root.attrib.get("Date")
+    rates: Dict[str, float] = {"RUB": 1.0}
     for currency in root.findall("Valute"):
         char_code = (currency.findtext("CharCode") or "").strip().upper()
-        if char_code != "USD":
+        if requested_codes and char_code not in requested_codes:
             continue
         nominal = _safe_float(currency.findtext("Nominal")) or 1.0
         value = _safe_float(currency.findtext("Value"))
         if value is None or nominal == 0:
-            break
-        return {
-            "provider": "cbr",
-            "timestamp": date,
-            "rates": {
-                "USD_RUB": value / nominal,
-            },
-        }
+            continue
+        rates[char_code] = value / nominal
 
-    raise ValueError("CBR daily rates payload does not contain USD quote")
+    missing_codes = sorted(code for code in requested_codes if code not in rates)
+    if missing_codes:
+        missing = ", ".join(missing_codes)
+        raise ValueError(f"CBR daily rates payload does not contain quotes for: {missing}")
+
+    return {
+        "provider": "cbr",
+        "timestamp": date,
+        "base_currency": "RUB",
+        "rates": rates,
+    }
 
 
 def _safe_float(value: Any) -> float | None:

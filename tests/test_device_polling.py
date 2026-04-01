@@ -4,6 +4,7 @@ import time
 from datetime import datetime, timezone
 
 from proof_of_heat.services import device_polling
+from proof_of_heat.services import economic_polling
 from proof_of_heat.services.device_polling import DevicePoller
 
 
@@ -758,12 +759,12 @@ def test_economics_metrics_are_computed_and_persisted(monkeypatch, tmp_path):
             "enabled": True,
             "currencies": {
                 "crypto": "BTC",
-                "fiat": "RUB",
+                "fiat": "EUR",
             },
             "exchange_rate": {
                 "integrations": {
-                    "btc_usd": "mempool_space",
-                    "usd_rub": "cbr",
+                    "crypto_usd": "mempool_space",
+                    "usd_fiat": "cbr",
                 },
                 "refresh_interval": 3600,
                 "stale_after": 7200,
@@ -776,7 +777,7 @@ def test_economics_metrics_are_computed_and_persisted(monkeypatch, tmp_path):
                 "stale_after": 7200,
             },
             "electricity": {
-                "price_per_kwh": 5.5,
+                "price_per_kwh": 0.06,
             },
         },
     }
@@ -809,7 +810,7 @@ def test_economics_metrics_are_computed_and_persisted(monkeypatch, tmp_path):
 
     monkeypatch.setattr(device_polling, "call_whatsminer", fake_call_whatsminer)
     monkeypatch.setattr(
-        device_polling,
+        economic_polling,
         "fetch_mempool_prices",
         lambda **kwargs: {
             "provider": "mempool_space",
@@ -818,16 +819,17 @@ def test_economics_metrics_are_computed_and_persisted(monkeypatch, tmp_path):
         },
     )
     monkeypatch.setattr(
-        device_polling,
-        "fetch_cbr_daily_usd_rub",
+        economic_polling,
+        "fetch_cbr_daily_rates",
         lambda **kwargs: {
             "provider": "cbr",
             "timestamp": "01.04.2026",
-            "rates": {"USD_RUB": 90.5},
+            "base_currency": "RUB",
+            "rates": {"RUB": 1.0, "USD": 90.5, "EUR": 100.0},
         },
     )
     monkeypatch.setattr(
-        device_polling,
+        economic_polling,
         "fetch_mempool_reward_stats",
         lambda **kwargs: {
             "provider": "mempool_space",
@@ -840,7 +842,7 @@ def test_economics_metrics_are_computed_and_persisted(monkeypatch, tmp_path):
         },
     )
     monkeypatch.setattr(
-        device_polling,
+        economic_polling,
         "fetch_mempool_hashrate",
         lambda **kwargs: {
             "provider": "mempool_space",
@@ -854,28 +856,28 @@ def test_economics_metrics_are_computed_and_persisted(monkeypatch, tmp_path):
     payload = poller.poll_economics(settings["economics"])
 
     assert payload["derived"]["exchange_rate_btc_usd"] == 100000
-    assert payload["derived"]["exchange_rate_usd_rub"] == 90.5
-    assert payload["derived"]["exchange_rate_btc_rub"] == 9_050_000
+    assert payload["derived"]["exchange_rate_usd_eur"] == 0.905
+    assert payload["derived"]["exchange_rate_btc_eur"] == 90_500
     assert payload["derived"]["network_hashrate_th_s"] == 500_000_000
     assert payload["derived"]["avg_block_reward_btc"] == 6.25
     assert abs(payload["derived"]["hashprice_btc_th_day"] - 0.0000018) < 1e-12
-    assert abs(payload["derived"]["hashprice_rub_th_day"] - 16.29) < 1e-9
-    assert payload["derived"]["electricity_price_rub_kwh"] == 5.5
-    assert abs(payload["derived"]["hashcost_rub_th_day"] - 2.64) < 1e-9
-    assert abs(payload["derived"]["hashcost_btc_th_day"] - (2.64 / 9_050_000)) < 1e-15
+    assert abs(payload["derived"]["hashprice_eur_th_day"] - 0.1629) < 1e-9
+    assert payload["derived"]["electricity_price_eur_kwh"] == 0.06
+    assert abs(payload["derived"]["hashcost_eur_th_day"] - 0.0288) < 1e-9
+    assert abs(payload["derived"]["hashcost_btc_th_day"] - (0.0288 / 90_500)) < 1e-15
     assert payload["derived"]["power_rate_source"] == "whatsminer:miner01:power_rate"
 
     metric_names = set(poller.list_metric_names("economics", "market"))
     assert {
         "exchange_rate_btc_usd",
-        "exchange_rate_usd_rub",
-        "exchange_rate_btc_rub",
+        "exchange_rate_usd_eur",
+        "exchange_rate_btc_eur",
         "network_hashrate_th_s",
         "avg_block_reward_btc",
         "hashprice_btc_th_day",
-        "hashprice_rub_th_day",
-        "electricity_price_rub_kwh",
-        "hashcost_rub_th_day",
+        "hashprice_eur_th_day",
+        "electricity_price_eur_kwh",
+        "hashcost_eur_th_day",
         "hashcost_btc_th_day",
     } <= metric_names
 
@@ -892,7 +894,8 @@ def test_economics_metrics_are_computed_and_persisted(monkeypatch, tmp_path):
 
     assert raw_event is not None
     raw_payload = json.loads(raw_event[0])
-    assert raw_payload["exchange_rate"]["btc_usd"]["prices"]["USD"] == 100000
+    assert raw_payload["exchange_rate"]["crypto_usd"]["prices"]["USD"] == 100000
+    assert raw_payload["exchange_rate"]["usd_fiat"]["rates"]["EUR"] == 100.0
     assert raw_payload["hashprice"]["reward_stats"]["payload"]["totalReward"] == "90000000000"
 
 
@@ -902,8 +905,8 @@ def test_economics_job_is_scheduled_without_devices(monkeypatch, tmp_path):
             "enabled": True,
             "exchange_rate": {
                 "integrations": {
-                    "btc_usd": "mempool_space",
-                    "usd_rub": "cbr",
+                    "crypto_usd": "mempool_space",
+                    "usd_fiat": "cbr",
                 },
                 "refresh_interval": 3600,
             },
@@ -937,8 +940,8 @@ def test_economics_is_polled_immediately_on_start(monkeypatch, tmp_path):
             "enabled": True,
             "exchange_rate": {
                 "integrations": {
-                    "btc_usd": "mempool_space",
-                    "usd_rub": "cbr",
+                    "crypto_usd": "mempool_space",
+                    "usd_fiat": "cbr",
                 },
                 "refresh_interval": 3600,
             },

@@ -56,6 +56,16 @@ class DummyDevicePoller:
     latest_payloads = {}
     latest_control_inputs = None
     metric_catalog = {}
+    economics_metadata = {
+        "enabled": True,
+        "currencies": {"crypto": "BTC", "fiat": "RUB"},
+        "metrics": [],
+        "current_metrics": [],
+        "labels": {},
+        "presets": {},
+        "device_type": "economics",
+        "device_id": "market",
+    }
 
     def __init__(self, settings_data, data_dir=None):
         self.settings_data = settings_data
@@ -82,6 +92,9 @@ class DummyDevicePoller:
     def get_metric_catalog(self):
         return self.metric_catalog.copy()
 
+    def get_economics_metadata(self):
+        return self.economics_metadata.copy()
+
     def get_metric_series(self, device_type, device_id, metric, start_ms=None, end_ms=None):
         return []
 
@@ -97,6 +110,16 @@ def build_routes(tmp_path, monkeypatch, parsed_settings=None, latest_payloads=No
     DummyDevicePoller.latest_payloads = latest_payloads or {}
     DummyDevicePoller.latest_control_inputs = None
     DummyDevicePoller.metric_catalog = {}
+    DummyDevicePoller.economics_metadata = {
+        "enabled": True,
+        "currencies": {"crypto": "BTC", "fiat": "RUB"},
+        "metrics": [],
+        "current_metrics": [],
+        "labels": {},
+        "presets": {},
+        "device_type": "economics",
+        "device_id": "market",
+    }
     DummyMiner.fetch_status_response = {"power": 1000, "fan_speed": 60}
     DummyMiner.set_power_limit_calls = []
     DummyMiner.init_kwargs = []
@@ -311,24 +334,50 @@ def test_metrics_catalog_api_returns_catalog(tmp_path, monkeypatch):
 
 def test_economics_api_returns_latest_payload_and_catalog(tmp_path, monkeypatch):
     routes = build_routes(tmp_path, monkeypatch)
+    DummyDevicePoller.economics_metadata = {
+        "enabled": True,
+        "currencies": {"crypto": "BTC", "fiat": "EUR"},
+        "metrics": [
+            "exchange_rate_btc_usd",
+            "exchange_rate_usd_eur",
+            "exchange_rate_btc_eur",
+            "hashprice_btc_th_day",
+        ],
+        "current_metrics": [
+            "exchange_rate_btc_usd",
+            "exchange_rate_usd_eur",
+            "exchange_rate_btc_eur",
+            "hashprice_btc_th_day",
+        ],
+        "labels": {
+            "exchange_rate_btc_usd": "BTC price in USD",
+            "exchange_rate_usd_eur": "USD to EUR exchange rate",
+            "exchange_rate_btc_eur": "BTC price in EUR",
+            "hashprice_btc_th_day": "Hashprice in BTC per TH per day",
+        },
+        "presets": {
+            "rates": {
+                "label": "Rates",
+                "metrics": [
+                    "exchange_rate_btc_usd",
+                    "exchange_rate_usd_eur",
+                    "exchange_rate_btc_eur",
+                ],
+            }
+        },
+        "device_type": "economics",
+        "device_id": "market",
+    }
     DummyDevicePoller.latest_payloads = {
         "economics:market": {
             "timestamp": "2026-04-01T10:00:00+00:00",
             "payload": {
                 "derived": {
-                    "exchange_rate_btc_rub": 8000000,
+                    "exchange_rate_btc_eur": 92000,
                     "hashprice_btc_th_day": 0.0000015,
                 },
                 "errors": [],
             },
-        }
-    }
-    DummyDevicePoller.metric_catalog = {
-        "economics": {
-            "market": [
-                "exchange_rate_btc_rub",
-                "hashprice_btc_th_day",
-            ]
         }
     }
 
@@ -337,18 +386,25 @@ def test_economics_api_returns_latest_payload_and_catalog(tmp_path, monkeypatch)
 
     assert current_payload == {
         "data": {
-            "exchange_rate_btc_rub": 8000000,
+            "exchange_rate_btc_eur": 92000,
             "hashprice_btc_th_day": 0.0000015,
         },
         "errors": [],
         "polled_at": "2026-04-01T10:00:00+00:00",
     }
-    assert catalog_payload == {
-        "metrics": [
-            "exchange_rate_btc_rub",
-            "hashprice_btc_th_day",
-        ]
-    }
+    assert catalog_payload["currencies"] == {"crypto": "BTC", "fiat": "EUR"}
+    assert catalog_payload["metrics"] == [
+        "exchange_rate_btc_usd",
+        "exchange_rate_usd_eur",
+        "exchange_rate_btc_eur",
+        "hashprice_btc_th_day",
+    ]
+    assert catalog_payload["labels"]["exchange_rate_btc_eur"] == "BTC price in EUR"
+    assert catalog_payload["presets"]["rates"]["metrics"] == [
+        "exchange_rate_btc_usd",
+        "exchange_rate_usd_eur",
+        "exchange_rate_btc_eur",
+    ]
 
 
 def test_fixed_power_mode_sets_power_limit_when_summary_is_ready():
