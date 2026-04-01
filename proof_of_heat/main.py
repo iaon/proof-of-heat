@@ -138,7 +138,17 @@ def _safe_float(value: Any) -> float | None:
 
 
 def _response_has_error(response: Any) -> bool:
-    return isinstance(response, dict) and bool(response.get("error"))
+    if not isinstance(response, dict):
+        return False
+    if response.get("error"):
+        return True
+    code = response.get("code")
+    if isinstance(code, int) and code != 0:
+        return True
+    msg = response.get("msg")
+    if isinstance(msg, str) and msg.strip().lower() == "error":
+        return True
+    return False
 
 
 def _extract_whatsminer_current_power(summary: dict[str, Any]) -> tuple[float | None, str | None]:
@@ -458,11 +468,17 @@ def _apply_fixed_supply_temp_heating_mode(
         )
         response = miner.set_power_limit(max_power)
         logger.debug("Fixed supply temp mode set_power_limit response: %r", response)
-        if not _response_has_error(response):
-            state.calibration_requested = True
-            state.calibration_complete = False
-            state.baseline_power_w = None
-            state.last_power_percent = None
+        if _response_has_error(response):
+            logger.error(
+                "Fixed supply temp mode failed to set calibration power limit to %sW: response=%r",
+                max_power,
+                response,
+            )
+            return response
+        state.calibration_requested = True
+        state.calibration_complete = False
+        state.baseline_power_w = None
+        state.last_power_percent = None
         return response
 
     if not state.calibration_complete and up_freq_finish != 1:
@@ -581,21 +597,21 @@ def _apply_fixed_supply_temp_heating_mode(
         return None
 
     if reported_power_percent is None:
-        logger.info(
+        logger.debug(
             "Fixed supply temp mode retrying power_percent=%s%% because reported percent is unavailable (last_requested=%r%%)",
             desired_percent,
             state.last_power_percent,
         )
     else:
-        logger.info(
+        logger.debug(
             "Fixed supply temp mode retrying power_percent=%s%% because reported percent is %s%% (last_requested=%r%%)",
             desired_percent,
             reported_power_percent,
             state.last_power_percent,
         )
 
-    logger.info(
-        "Fixed supply temp mode updating power_percent from requested=%s%% reported=%s%% to desired=%s%% (raw=%.2fC corrected=%.2fC target=%.2fC error=%.2fC source=%r)",
+    logger.debug(
+        "Fixed supply temp mode attempting power_percent update from requested=%s%% reported=%s%% to desired=%s%% (raw=%.2fC corrected=%.2fC target=%.2fC error=%.2fC source=%r)",
         state.last_power_percent,
         reported_power_percent,
         desired_percent,
@@ -607,8 +623,30 @@ def _apply_fixed_supply_temp_heating_mode(
     )
     response = miner.set_power_percent(desired_percent)
     logger.debug("Fixed supply temp mode set_power_percent response: %r", response)
-    if not _response_has_error(response):
-        state.last_power_percent = desired_percent
+    if _response_has_error(response):
+        logger.error(
+            "Fixed supply temp mode failed to set power_percent to %s%% (reported=%s%% raw=%.2fC corrected=%.2fC target=%.2fC error=%.2fC source=%r): response=%r",
+            desired_percent,
+            reported_power_percent,
+            measurement.raw_value_c,
+            measured_supply_temp,
+            target_supply_temp,
+            error_c,
+            measurement.source,
+            response,
+        )
+        return response
+    state.last_power_percent = desired_percent
+    logger.info(
+        "Fixed supply temp mode applied power_percent=%s%% (reported_before=%s%% raw=%.2fC corrected=%.2fC target=%.2fC error=%.2fC source=%r)",
+        desired_percent,
+        reported_power_percent,
+        measurement.raw_value_c,
+        measured_supply_temp,
+        target_supply_temp,
+        error_c,
+        measurement.source,
+    )
     return response
 
 
