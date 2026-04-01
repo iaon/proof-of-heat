@@ -575,6 +575,7 @@ def test_fixed_supply_temp_mode_sets_calibration_power_limit():
     assert result == {"power_limit": 3800}
     assert DummyMiner.set_power_limit_calls == [3800]
     assert DummyMiner.set_power_percent_calls == []
+    assert state.calibration_requested is True
     assert state.calibration_complete is False
     assert state.baseline_power_w is None
 
@@ -634,6 +635,66 @@ def test_fixed_supply_temp_mode_captures_baseline_and_updates_power_percent():
     assert state.baseline_power_w == 3000
     assert state.last_power_percent == 70
     assert DummyMiner.set_power_percent_calls == [70]
+
+
+def test_fixed_supply_temp_mode_proceeds_after_calibration_request_even_if_reported_limit_stays_lower():
+    DummyMiner.fetch_status_response = {
+        "code": 0,
+        "msg": {
+            "summary": {
+                "power-limit": 3600,
+                "up-freq-finish": 1,
+                "power": 3110,
+            }
+        },
+    }
+    DummyMiner.start_calls = 0
+    DummyMiner.set_power_limit_calls = []
+    DummyMiner.set_power_percent_calls = []
+    state = main.FixedSupplyTempRuntimeState(
+        signature=("miner01", "miner.local", 4433, 3800, 1600),
+        normal_mode_requested=True,
+        calibration_requested=True,
+    )
+    miner = DummyMiner()
+
+    result = main._apply_fixed_supply_temp_heating_mode(
+        miner,
+        {
+            "devices": {
+                "whatsminer": [
+                    {
+                        "device_id": "miner01",
+                        "host": "miner.local",
+                        "max_power": 3800,
+                        "min_power": 1600,
+                    }
+                ]
+            },
+            "control_inputs": {"max_age_seconds": 180},
+            "heating_mode": {
+                "enabled": True,
+                "type": "fixed_supply_temp",
+                "params": {
+                    "target_supply_temp_c": 40.0,
+                    "tolerance_c": 1.0,
+                    "correction": 0.0,
+                },
+            },
+        },
+        {
+            "ts": int(main.datetime.now(main.timezone.utc).timestamp() * 1000),
+            "supply_temp": 45.0,
+        },
+        runtime_state=state,
+    )
+
+    assert result == {"power_percent": 52}
+    assert DummyMiner.set_power_limit_calls == []
+    assert DummyMiner.set_power_percent_calls == [52]
+    assert state.calibration_complete is True
+    assert state.baseline_power_w == 3110
+    assert state.last_power_percent == 52
 
 
 def test_fixed_supply_temp_mode_skips_when_supply_temp_is_missing():

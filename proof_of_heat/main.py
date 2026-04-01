@@ -13,7 +13,7 @@ from typing import Any, Dict
 
 import yaml
 
-from proof_of_heat.logging_utils import ensure_trace_level
+from proof_of_heat.logging_utils import configure_logging, ensure_trace_level
 
 _startup_error: Exception | None = None
 
@@ -41,7 +41,7 @@ def _resolve_log_level(value: str) -> int:
 ensure_trace_level()
 app: Any = _diagnostic_app(Exception("proof-of-heat app not initialized"))
 logger = logging.getLogger("proof_of_heat")
-logging.basicConfig(level=_resolve_log_level(os.getenv("LOG_LEVEL", "INFO")))
+configure_logging(_resolve_log_level(os.getenv("LOG_LEVEL", "INFO")))
 TEMPLATES_DIR = Path(__file__).with_name("templates")
 STATIC_DIR = Path(__file__).with_name("static")
 
@@ -145,6 +145,7 @@ def _response_has_error(response: Any) -> bool:
 class FixedSupplyTempRuntimeState:
     signature: tuple[Any, ...] | None = None
     normal_mode_requested: bool = False
+    calibration_requested: bool = False
     calibration_complete: bool = False
     baseline_power_w: float | None = None
     last_power_percent: int | None = None
@@ -152,12 +153,21 @@ class FixedSupplyTempRuntimeState:
     def reset(self, signature: tuple[Any, ...] | None = None) -> None:
         self.signature = signature
         self.normal_mode_requested = False
+        self.calibration_requested = False
         self.calibration_complete = False
         self.baseline_power_w = None
         self.last_power_percent = None
 
 
 _FIXED_SUPPLY_TEMP_RUNTIME_STATE = FixedSupplyTempRuntimeState()
+
+
+@dataclass
+class FixedSupplyTempMeasurement:
+    raw_value_c: float
+    corrected_value_c: float
+    source: str | None
+    age_ms: int | None
 
 
 def _resolve_control_interval_seconds(settings_data: Dict[str, Any]) -> int:
@@ -306,7 +316,7 @@ def _resolve_fixed_supply_temp_measurement(
     settings_data: Dict[str, Any],
     control_inputs: Dict[str, Any] | None,
     correction: float,
-) -> float | None:
+) -> FixedSupplyTempMeasurement | None:
     if not isinstance(control_inputs, dict):
         logger.debug("Fixed supply temp mode skipped: latest control inputs unavailable")
         return None
@@ -317,17 +327,34 @@ def _resolve_fixed_supply_temp_measurement(
 
     max_age_ms = _resolve_control_inputs_max_age_ms(settings_data)
     ts_ms = _safe_int(control_inputs.get("ts"))
+    age_ms: int | None = None
     if max_age_ms is not None and ts_ms is not None:
         now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
-        if now_ms - ts_ms > max_age_ms:
+        age_ms = now_ms - ts_ms
+        if age_ms > max_age_ms:
             logger.debug(
-                "Fixed supply temp mode skipped: latest control inputs are stale (age=%sms, max=%sms)",
-                now_ms - ts_ms,
+                "Fixed supply temp mode skipped: latest control inputs are stale (source=%r, age=%sms, max=%sms)",
+                control_inputs.get("supply_temp_source"),
+                age_ms,
                 max_age_ms,
             )
             return None
 
-    return supply_temp + correction
+    measurement = FixedSupplyTempMeasurement(
+        raw_value_c=supply_temp,
+        corrected_value_c=supply_temp + correction,
+        source=str(control_inputs.get("supply_temp_source")) if control_inputs.get("supply_temp_source") else None,
+        age_ms=age_ms,
+    )
+    logger.debug(
+        "Fixed supply temp measurement accepted: raw=%.2fC corrected=%.2fC correction=%.2fC source=%r age_ms=%r",
+        measurement.raw_value_c,
+        measurement.corrected_value_c,
+        correction,
+        measurement.source,
+        measurement.age_ms,
+    )
+    return measurement
 
 
 def _apply_fixed_supply_temp_heating_mode(
@@ -406,18 +433,22 @@ def _apply_fixed_supply_temp_heating_mode(
     up_freq_finish = _safe_int(summary.get("up-freq-finish"))
     current_power = _safe_float(summary.get("power"))
 
-    if current_power_limit != max_power:
+    if not state.calibration_complete and current_power_limit != max_power and not state.calibration_requested:
         logger.info(
             "Fixed supply temp mode setting miner power limit to calibration max %sW (current=%r)",
             max_power,
             current_power_limit,
         )
-        state.calibration_complete = False
-        state.baseline_power_w = None
-        state.last_power_percent = None
-        return miner.set_power_limit(max_power)
+        response = miner.set_power_limit(max_power)
+        logger.debug("Fixed supply temp mode set_power_limit response: %r", response)
+        if not _response_has_error(response):
+            state.calibration_requested = True
+            state.calibration_complete = False
+            state.baseline_power_w = None
+            state.last_power_percent = None
+        return response
 
-    if up_freq_finish != 1:
+    if not state.calibration_complete and up_freq_finish != 1:
         logger.debug(
             "Fixed supply temp mode waiting for frequency ramp to complete: up-freq-finish=%r",
             up_freq_finish,
@@ -430,6 +461,12 @@ def _apply_fixed_supply_temp_heating_mode(
                 "Fixed supply temp mode skipped: summary does not contain a valid current power for calibration"
             )
             return None
+        if current_power_limit != max_power and state.calibration_requested:
+            logger.info(
+                "Fixed supply temp mode proceeding with calibration at reported power-limit=%r after request for %sW",
+                current_power_limit,
+                max_power,
+            )
         state.calibration_complete = True
         state.baseline_power_w = current_power
         state.last_power_percent = 100
@@ -438,21 +475,30 @@ def _apply_fixed_supply_temp_heating_mode(
             current_power,
         )
 
-    measured_supply_temp = _resolve_fixed_supply_temp_measurement(
+    measurement = _resolve_fixed_supply_temp_measurement(
         settings_data=settings_data,
         control_inputs=control_inputs,
         correction=correction,
     )
-    if measured_supply_temp is None:
+    if measurement is None:
+        logger.info(
+            "Fixed supply temp mode waiting for fresh supply_temp measurement; keeping power_percent at %r%%",
+            state.last_power_percent,
+        )
         return None
+    measured_supply_temp = measurement.corrected_value_c
 
     error_c = target_supply_temp - measured_supply_temp
     if abs(error_c) <= tolerance_c:
-        logger.debug(
-            "Fixed supply temp mode within tolerance: measured=%.2fC target=%.2fC tolerance=%.2fC",
+        logger.info(
+            "Fixed supply temp mode holding power_percent at %r%% within tolerance (raw=%.2fC corrected=%.2fC target=%.2fC error=%.2fC tolerance=%.2fC source=%r)",
+            state.last_power_percent,
+            measurement.raw_value_c,
             measured_supply_temp,
             target_supply_temp,
+            error_c,
             tolerance_c,
+            measurement.source,
         )
         return None
 
@@ -477,19 +523,42 @@ def _apply_fixed_supply_temp_heating_mode(
             )
         )
     )
+    logger.debug(
+        "Fixed supply temp control decision: raw=%.2fC corrected=%.2fC target=%.2fC error=%.2fC effective_error=%.2fC tolerance=%.2fC baseline_power_w=%.1f min_power=%r min_percent=%s desired_percent=%s last_percent=%r source=%r",
+        measurement.raw_value_c,
+        measured_supply_temp,
+        target_supply_temp,
+        error_c,
+        effective_error_c,
+        tolerance_c,
+        baseline_power_w,
+        min_power,
+        min_percent,
+        desired_percent,
+        state.last_power_percent,
+        measurement.source,
+    )
     if state.last_power_percent == desired_percent:
-        logger.debug(
-            "Fixed supply temp mode skipped: power_percent already set to %s%%",
+        logger.info(
+            "Fixed supply temp mode keeping power_percent at %s%% (raw=%.2fC corrected=%.2fC target=%.2fC error=%.2fC source=%r)",
             desired_percent,
+            measurement.raw_value_c,
+            measured_supply_temp,
+            target_supply_temp,
+            error_c,
+            measurement.source,
         )
         return None
 
     logger.info(
-        "Fixed supply temp mode updating power_percent from %s%% to %s%% (supply=%.2fC corrected, target=%.2fC)",
+        "Fixed supply temp mode updating power_percent from %s%% to %s%% (raw=%.2fC corrected=%.2fC target=%.2fC error=%.2fC source=%r)",
         state.last_power_percent,
         desired_percent,
+        measurement.raw_value_c,
         measured_supply_temp,
         target_supply_temp,
+        error_c,
+        measurement.source,
     )
     response = miner.set_power_percent(desired_percent)
     if not _response_has_error(response):
