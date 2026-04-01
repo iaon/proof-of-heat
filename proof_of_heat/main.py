@@ -155,13 +155,16 @@ def _build_whatsminer_from_settings(settings_data: Dict[str, Any]) -> Any | None
     if not isinstance(device, dict):
         logger.warning("Fixed power mode skipped: first whatsminer device config is invalid")
         return None
-    return Whatsminer(
-        host=device.get("host"),
-        port=device.get("port") or config_defaults_port(),
-        login=device.get("login"),
-        password=device.get("password"),
-        timeout=device.get("timeout") or config_defaults_timeout(),
-    )
+    kwargs: Dict[str, Any] = {
+        "host": device.get("host"),
+        "port": device.get("port") or config_defaults_port(),
+        "login": device.get("login"),
+        "password": device.get("password"),
+        "timeout": device.get("timeout") or config_defaults_timeout(),
+    }
+    if "max_power" in device:
+        kwargs["max_power"] = device.get("max_power")
+    return Whatsminer(**kwargs)
 
 
 def config_defaults_port() -> int:
@@ -264,6 +267,7 @@ def create_app(config: AppConfig = DEFAULT_CONFIG) -> FastAPI:
         login=config.miner.login,
         password=config.miner.password,
         timeout=config.miner.timeout,
+        max_power=config.miner.max_power,
     )
     controller = TemperatureController(
         config=config, miner=miner, history_file=history_file

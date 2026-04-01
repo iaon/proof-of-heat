@@ -85,7 +85,7 @@ code-driven to keep things simple. Update the `DEFAULT_CONFIG` (or pass a custom
 
 - target temperature and mode
 - data directory for historical snapshots (`data/history.csv`)
-- Whatsminer connection parameters (host/port/login/password/timeout)
+- Whatsminer connection parameters (host/port/login/password/timeout/max_power)
 
 Weather and device metadata live in `conf/settings.yaml` (editable from `/config`).
 Update `location` (latitude/longitude) to enable current weather on the status

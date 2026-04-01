@@ -15,11 +15,24 @@ def test_miner_config_defaults_min_power():
     assert config.min_power == 1000
 
 
+def test_miner_config_defaults_max_power_to_none():
+    config = MinerConfig()
+
+    assert config.max_power is None
+
+
 def test_default_settings_yaml_includes_whatsminer_min_power():
     parsed = parse_settings_yaml(DEFAULT_SETTINGS_YAML)
 
     whatsminer_devices = parsed["devices"]["whatsminer"]
     assert whatsminer_devices[0]["min_power"] == 1000
+
+
+def test_default_settings_yaml_includes_whatsminer_max_power():
+    parsed = parse_settings_yaml(DEFAULT_SETTINGS_YAML)
+
+    whatsminer_devices = parsed["devices"]["whatsminer"]
+    assert whatsminer_devices[0]["max_power"] is None
 
 
 def test_heating_mode_defaults_to_room_target():

@@ -482,6 +482,7 @@ def test_run_heating_mode_control_uses_first_whatsminer_device_config(monkeypatc
                     "login": "user",
                     "password": "secret",
                     "timeout": 12,
+                    "max_power": 3800,
                 }
             ]
         },
@@ -510,6 +511,7 @@ def test_run_heating_mode_control_uses_first_whatsminer_device_config(monkeypatc
         "login": "user",
         "password": "secret",
         "timeout": 12,
+        "max_power": 3800,
     }
     assert DummyMiner.set_power_limit_calls == [3200]
 

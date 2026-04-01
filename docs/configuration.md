@@ -51,6 +51,7 @@ devices:
       password: "pass"
       host: "example.com"
       port: 1111
+      max_power: null
       min_power: 1000
 
 control_inputs:
@@ -160,6 +161,7 @@ Common conventions:
 - `device_id` is the logical identifier used in stored metrics and config references.
 - Weather device IDs should be integers.
 - ZONT devices can override polling interval with `refresh_interval`.
+- WhatsMiner devices may define `max_power` in watts. This is an optional upper bound reserved for future control logic; it is currently stored in config and passed into the plugin, but not enforced yet.
 - WhatsMiner devices may define `min_power` in watts. This is the minimum stable operating power; future control logic can treat lower requested power as a stop condition.
 
 ### `control_inputs`

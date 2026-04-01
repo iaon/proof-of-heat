@@ -29,6 +29,7 @@ devices:
       password: "pass"
       host: "example.com"
       port: 1111
+      max_power: null
       min_power: 1000
 control_inputs:
   max_age_seconds: 180

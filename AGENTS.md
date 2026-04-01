@@ -46,7 +46,7 @@
 
 ## Configuration & Secrets
 - Default settings live in `proof_of_heat/config.py`; editable config lives in `conf/settings.yaml`.
-- When changing configuration structure, defaults, or supported config fields, update `conf/settings.yaml.example` in the same change.
+- When changing configuration structure, defaults, or supported config fields, update `conf/settings.yaml.example` and `docs/configuration.md` in the same change.
 - Do not commit real credentials—use placeholders in config and provide secrets via environment or local overrides.
 
 ## Architecture Overview

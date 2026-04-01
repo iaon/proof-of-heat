@@ -17,12 +17,14 @@ class Whatsminer(Miner):
         login: str | None = None,
         password: str | None = None,
         timeout: int = DEFAULT_TIMEOUT,
+        max_power: int | None = None,
     ) -> None:
         self.host = host
         self.port = port
         self.login = login
         self.password = password
         self.timeout = timeout
+        self.max_power = max_power
         self.name = "whatsminer"
 
     def _validate_credentials(self) -> Dict[str, str] | None:

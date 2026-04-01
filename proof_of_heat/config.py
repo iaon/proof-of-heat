@@ -19,6 +19,10 @@ class MinerConfig(BaseModel):
     login: Optional[str] = Field(default=None, description="Miner login account.")
     password: Optional[str] = Field(default=None, description="Miner login password.")
     timeout: int = Field(default=DEFAULT_TIMEOUT, description="API timeout (seconds).")
+    max_power: Optional[int] = Field(
+        default=None,
+        description="Optional miner power ceiling in watts reserved for future control logic.",
+    )
     min_power: int = Field(
         default=1000,
         description="Minimum stable miner power in watts; lower targets should stop the miner instead.",
