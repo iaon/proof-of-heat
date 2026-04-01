@@ -23,7 +23,12 @@ class ColorFormatter(logging.Formatter):
         color = LEVEL_COLORS.get(record.levelno)
         if not color:
             return message
-        return f"{color}{message}{RESET}"
+        level_name = record.levelname
+        prefix = f"{level_name}:"
+        colored_prefix = f"{color}{prefix}{RESET}"
+        if message.startswith(prefix):
+            return f"{colored_prefix}{message[len(prefix):]}"
+        return message
 
 
 def ensure_trace_level() -> None:

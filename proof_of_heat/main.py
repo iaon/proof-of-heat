@@ -141,6 +141,14 @@ def _response_has_error(response: Any) -> bool:
     return isinstance(response, dict) and bool(response.get("error"))
 
 
+def _extract_whatsminer_current_power(summary: dict[str, Any]) -> tuple[float | None, str | None]:
+    for key in ("power", "power-realtime", "power-5min"):
+        value = _safe_float(summary.get(key))
+        if value is not None and value > 0:
+            return value, key
+    return None, None
+
+
 @dataclass
 class FixedSupplyTempRuntimeState:
     signature: tuple[Any, ...] | None = None
@@ -431,7 +439,7 @@ def _apply_fixed_supply_temp_heating_mode(
 
     current_power_limit = _safe_int(summary.get("power-limit"))
     up_freq_finish = _safe_int(summary.get("up-freq-finish"))
-    current_power = _safe_float(summary.get("power"))
+    current_power, current_power_key = _extract_whatsminer_current_power(summary)
 
     if not state.calibration_complete and current_power_limit != max_power and not state.calibration_requested:
         logger.info(
@@ -457,8 +465,14 @@ def _apply_fixed_supply_temp_heating_mode(
 
     if not state.calibration_complete:
         if current_power is None or current_power <= 0:
+            available_power_fields = {
+                key: summary.get(key)
+                for key in ("power", "power-realtime", "power-5min", "power-limit")
+                if key in summary
+            }
             logger.warning(
-                "Fixed supply temp mode skipped: summary does not contain a valid current power for calibration"
+                "Fixed supply temp mode skipped: summary does not contain a valid current power for calibration; available_power_fields=%r",
+                available_power_fields,
             )
             return None
         if current_power_limit != max_power and state.calibration_requested:
@@ -471,8 +485,9 @@ def _apply_fixed_supply_temp_heating_mode(
         state.baseline_power_w = current_power
         state.last_power_percent = 100
         logger.info(
-            "Fixed supply temp mode captured baseline power %.1fW as 100%%",
+            "Fixed supply temp mode captured baseline power %.1fW from %s as 100%%",
             current_power,
+            current_power_key or "unknown",
         )
 
     measurement = _resolve_fixed_supply_temp_measurement(
