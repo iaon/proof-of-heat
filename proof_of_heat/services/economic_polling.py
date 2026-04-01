@@ -46,6 +46,7 @@ class EconomicsMetadata:
     current_metrics: list[str]
     labels: dict[str, str]
     presets: dict[str, dict[str, Any]]
+    stale_after_ms_by_metric: dict[str, int]
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -55,6 +56,7 @@ class EconomicsMetadata:
             "current_metrics": self.current_metrics,
             "labels": self.labels,
             "presets": self.presets,
+            "stale_after_ms_by_metric": self.stale_after_ms_by_metric,
             "device_type": ECONOMICS_DEVICE_TYPE,
             "device_id": ECONOMICS_DEVICE_ID,
         }
@@ -412,8 +414,18 @@ def build_economics_metadata(economics: Any) -> EconomicsMetadata:
                 "profitability": {"label": "Profitability", "metrics": []},
                 "market": {"label": "Market inputs", "metrics": []},
             },
+            stale_after_ms_by_metric={},
         )
     metric_names = build_economics_metric_names(crypto, fiat)
+    exchange_stale_ms = _resolve_stale_after_ms(
+        economics.get("exchange_rate") if isinstance(economics, dict) else None,
+        default_seconds=7200,
+    )
+    hashprice_stale_ms = _resolve_stale_after_ms(
+        economics.get("hashprice") if isinstance(economics, dict) else None,
+        default_seconds=7200,
+    )
+    combined_stale_ms = max(exchange_stale_ms, hashprice_stale_ms)
     current_metrics = [
         metric_names.exchange_rate_crypto_usd,
         metric_names.exchange_rate_crypto_fiat,
@@ -479,6 +491,22 @@ def build_economics_metadata(economics: Any) -> EconomicsMetadata:
         current_metrics=_unique_metric_names(current_metrics),
         labels=labels,
         presets=presets,
+        stale_after_ms_by_metric={
+            metric_names.exchange_rate_crypto_usd: exchange_stale_ms,
+            **(
+                {metric_names.exchange_rate_usd_fiat: exchange_stale_ms}
+                if metric_names.exchange_rate_usd_fiat
+                else {}
+            ),
+            metric_names.exchange_rate_crypto_fiat: exchange_stale_ms,
+            metric_names.network_hashrate_th_s: hashprice_stale_ms,
+            metric_names.avg_block_reward_crypto: hashprice_stale_ms,
+            metric_names.hashprice_crypto_th_day: hashprice_stale_ms,
+            metric_names.hashprice_fiat_th_day: hashprice_stale_ms,
+            metric_names.electricity_price_fiat_kwh: combined_stale_ms,
+            metric_names.hashcost_fiat_th_day: combined_stale_ms,
+            metric_names.hashcost_crypto_th_day: combined_stale_ms,
+        },
     )
 
 

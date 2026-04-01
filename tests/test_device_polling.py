@@ -972,3 +972,40 @@ def test_economics_is_polled_immediately_on_start(monkeypatch, tmp_path):
         assert latest_payloads["economics:market"]["payload"]["ok"] is True
     finally:
         poller.shutdown()
+
+
+def test_economics_metadata_includes_stale_after_by_metric(tmp_path):
+    settings = {
+        "economics": {
+            "enabled": True,
+            "currencies": {
+                "crypto": "BTC",
+                "fiat": "EUR",
+            },
+            "exchange_rate": {
+                "integrations": {
+                    "crypto_usd": "mempool_space",
+                    "usd_fiat": "cbr",
+                },
+                "refresh_interval": 3600,
+                "stale_after": 5400,
+            },
+            "hashprice": {
+                "integration": "mempool_space",
+                "refresh_interval": 3600,
+                "stale_after": 7200,
+            },
+            "electricity": {
+                "price_per_kwh": 0.06,
+            },
+        }
+    }
+
+    poller = DevicePoller(settings, data_dir=tmp_path)
+    metadata = poller.get_economics_metadata()
+
+    assert metadata["currencies"] == {"crypto": "BTC", "fiat": "EUR"}
+    assert metadata["stale_after_ms_by_metric"]["exchange_rate_btc_usd"] == 5_400_000
+    assert metadata["stale_after_ms_by_metric"]["exchange_rate_usd_eur"] == 5_400_000
+    assert metadata["stale_after_ms_by_metric"]["hashprice_btc_th_day"] == 7_200_000
+    assert metadata["stale_after_ms_by_metric"]["hashcost_eur_th_day"] == 7_200_000

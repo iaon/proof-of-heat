@@ -29,6 +29,7 @@ let catalogData = {
     current_metrics: [],
     labels: {},
     presets: {},
+    stale_after_ms_by_metric: {},
 };
 const metricRows = [];
 
@@ -49,6 +50,11 @@ function getCurrentMetricsOrder() {
 function getPresetMetrics(name) {
     const preset = catalogData.presets[name];
     return Array.isArray(preset && preset.metrics) ? preset.metrics : [];
+}
+
+function getMetricGapMs(metricName) {
+    const gapMs = Number((catalogData.stale_after_ms_by_metric || {})[metricName]);
+    return Number.isFinite(gapMs) && gapMs > 0 ? gapMs * 3 : null;
 }
 
 function renderPresetLabels() {
@@ -391,13 +397,15 @@ async function loadChart() {
 
     if (chart) chart.destroy();
     const datasets = metricSeries.map((seriesData, index) => {
-        const gapMs = 10 * 60 * 1000;
+        const gapMs = getMetricGapMs(selectedSeries[index] && selectedSeries[index].metric);
         const series = [];
         seriesData.points.forEach((point, pointIndex) => {
             const ts = point.ts;
             if (pointIndex > 0) {
                 const prevTs = seriesData.points[pointIndex - 1].ts;
-                if (ts - prevTs > gapMs) series.push({ x: prevTs + gapMs, y: null });
+                if (gapMs !== null && ts - prevTs > gapMs) {
+                    series.push({ x: prevTs + gapMs, y: null });
+                }
             }
             series.push({ x: ts, y: point.value });
         });

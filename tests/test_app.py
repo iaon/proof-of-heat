@@ -63,6 +63,7 @@ class DummyDevicePoller:
         "current_metrics": [],
         "labels": {},
         "presets": {},
+        "stale_after_ms_by_metric": {},
         "device_type": "economics",
         "device_id": "market",
     }
@@ -117,6 +118,7 @@ def build_routes(tmp_path, monkeypatch, parsed_settings=None, latest_payloads=No
         "current_metrics": [],
         "labels": {},
         "presets": {},
+        "stale_after_ms_by_metric": {},
         "device_type": "economics",
         "device_id": "market",
     }
@@ -365,6 +367,12 @@ def test_economics_api_returns_latest_payload_and_catalog(tmp_path, monkeypatch)
                 ],
             }
         },
+        "stale_after_ms_by_metric": {
+            "exchange_rate_btc_usd": 7200000,
+            "exchange_rate_usd_eur": 7200000,
+            "exchange_rate_btc_eur": 7200000,
+            "hashprice_btc_th_day": 7200000,
+        },
         "device_type": "economics",
         "device_id": "market",
     }
@@ -405,6 +413,7 @@ def test_economics_api_returns_latest_payload_and_catalog(tmp_path, monkeypatch)
         "exchange_rate_usd_eur",
         "exchange_rate_btc_eur",
     ]
+    assert catalog_payload["stale_after_ms_by_metric"]["exchange_rate_btc_eur"] == 7_200_000
 
 
 def test_fixed_power_mode_sets_power_limit_when_summary_is_ready():

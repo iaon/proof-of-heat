@@ -54,3 +54,76 @@
 - Core flow: API routes -> temperature controller -> miner plugin -> snapshot history in `data/history.csv`.
 - Periodic device polling runs through APScheduler and writes telemetry snapshots and metrics into SQLite.
 - UI is lightweight and served from the backend (`/` and `/config`) for quick local control.
+
+## Session Notes Files
+
+If the user asks to read, write, update, export, or save a session notes file, use a Markdown file in:
+
+`{repo}/prompts/`
+
+### Naming
+
+Prefer `YYYYMMDD-short-description.md` using the user's local timezone.
+
+### Reading
+
+- Use the filename given by the user if provided.
+- Otherwise pick the file that best matches the current task, issue, or branch.
+- Read the whole file before continuing.
+
+### Writing
+
+- Read the existing file first if it exists.
+- Keep prior content.
+- Update:
+  - `Summary`
+  - `Key Decisions`
+  - `Changes Made`
+  - `Open Items`
+- Append a new session entry at the end.
+- Use `unknown` instead of guessing missing metadata.
+
+### Session ID
+
+- For `Session ID`, do not invent a value.
+- Use the first available source in this order:
+  - `CODEX_THREAD_ID` environment variable
+  - `CODEX_SESSION_ID` environment variable
+  - `SESSION_ID` environment variable
+  - A session ID explicitly provided by the user in the conversation
+- If none of these sources are available, write `unknown`.
+- If you need to resolve it from the shell, prefer a simple environment lookup such as `printenv CODEX_THREAD_ID`.
+
+### Structure
+
+```markdown
+# [Task Title]
+
+## Summary
+Short cumulative summary.
+
+## Key Decisions
+- Decision and why
+
+## Changes Made
+- path/to/file.ext: short description
+
+## Open Items
+- Remaining work
+
+## Session Metadata
+| Date | Agent | Model | Branch | Session ID |
+|------|-------|-------|--------|------------|
+| YYYYMMDD | tool-name | model-name | branch-name | session-id |
+
+```
+
+## Session Transcript
+
+### Session — YYYY-MM-DD
+
+#### User
+[Request]
+
+#### Assistant
+[Response]
