@@ -14,6 +14,7 @@ from typing import Any, Dict
 import yaml
 
 from proof_of_heat.logging_utils import configure_logging, ensure_trace_level
+from proof_of_heat.version import get_display_version
 
 _startup_error: Exception | None = None
 
@@ -44,6 +45,7 @@ logger = logging.getLogger("proof_of_heat")
 configure_logging(_resolve_log_level(os.getenv("LOG_LEVEL", "INFO")))
 TEMPLATES_DIR = Path(__file__).with_name("templates")
 STATIC_DIR = Path(__file__).with_name("static")
+APP_VERSION = get_display_version()
 
 
 def load_template(name: str) -> str:
@@ -675,7 +677,7 @@ def _run_heating_mode_control(device_poller: Any | None = None) -> None:
 
 
 def create_app(config: AppConfig = DEFAULT_CONFIG) -> FastAPI:
-    logger.info("Starting proof-of-heat FastAPI app")
+    logger.info("Starting proof-of-heat FastAPI app version %s", APP_VERSION)
     config.ensure_data_dir()
     root_path = os.getenv("ROOT_PATH", "").rstrip("/")
 
@@ -694,7 +696,7 @@ def create_app(config: AppConfig = DEFAULT_CONFIG) -> FastAPI:
         config=config, miner=miner, history_file=history_file
     )
 
-    app = FastAPI(title="proof-of-heat MVP", version="0.1.0", root_path=root_path)
+    app = FastAPI(title="proof-of-heat MVP", version=APP_VERSION, root_path=root_path)
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
     settings_data = parse_settings_yaml(load_settings_yaml())
@@ -742,6 +744,7 @@ def create_app(config: AppConfig = DEFAULT_CONFIG) -> FastAPI:
             markup.replace("__ROOT_PATH_JSON__", json.dumps(root_path))
             .replace("__ROOT_PATH__", escape(root_path, quote=True))
             .replace("__STATIC_VERSION__", STATIC_VERSION)
+            .replace("__APP_VERSION__", escape(APP_VERSION, quote=True))
         )
 
     ui_markup = load_template("ui.html")
@@ -1103,6 +1106,7 @@ def create_app(config: AppConfig = DEFAULT_CONFIG) -> FastAPI:
             {
                 "__ROOT_PATH__": escape(root_path, quote=True),
                 "__STATIC_VERSION__": STATIC_VERSION,
+                "__APP_VERSION__": escape(APP_VERSION, quote=True),
                 "__DEVICE_CARDS__": card_markup
                 or '<p class="muted">No devices configured.</p>',
             },

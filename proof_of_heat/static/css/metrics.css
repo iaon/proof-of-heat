@@ -114,6 +114,16 @@ canvas {
     max-width: 100%;
 }
 
+.range-actions {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+.range-btn {
+    font-size: 13px;
+}
+
 @media (max-width: 900px) {
     .metric-rows {
         min-width: 260px;

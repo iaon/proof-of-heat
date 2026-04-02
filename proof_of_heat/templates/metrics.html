@@ -29,7 +29,12 @@
             <input id="end-hour" type="number" min="0" max="23" placeholder="HH" />
             <input id="end-minute" type="number" min="0" max="59" placeholder="MM" />
             <input id="end-second" type="number" min="0" max="59" placeholder="SS" />
-            <button id="reset-range" type="button">Last 24h</button>
+            <label>Quick range</label>
+            <div class="range-actions">
+                <button type="button" class="range-btn secondary" data-hours="1">Last 1h</button>
+                <button type="button" class="range-btn secondary" data-hours="3">Last 3h</button>
+                <button type="button" class="range-btn secondary" data-hours="24">Last 24h</button>
+            </div>
             <button id="apply">Load</button>
         </div>
     </div>
@@ -42,6 +47,7 @@
     <script>
         const rootPath = __ROOT_PATH_JSON__;
     </script>
+    <footer class="page-footer muted">Version __APP_VERSION__</footer>
     <script src="__ROOT_PATH__/static/js/metrics.js?v=__STATIC_VERSION__"></script>
 </body>
 </html>

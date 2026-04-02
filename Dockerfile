@@ -1,8 +1,13 @@
 FROM python:3.11-slim
 
+ARG PROOF_OF_HEAT_DISPLAY_VERSION=""
+ARG PROOF_OF_HEAT_COMMIT=""
+
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    HOME=/home/app
+    HOME=/home/app \
+    PROOF_OF_HEAT_DISPLAY_VERSION=${PROOF_OF_HEAT_DISPLAY_VERSION} \
+    PROOF_OF_HEAT_COMMIT=${PROOF_OF_HEAT_COMMIT}
 
 WORKDIR /app
 
@@ -15,6 +20,7 @@ RUN apt-get update \
 COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 
+COPY VERSION ./
 COPY proof_of_heat ./proof_of_heat
 COPY docs ./docs
 COPY README.md ./

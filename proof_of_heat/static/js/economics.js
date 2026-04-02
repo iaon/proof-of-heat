@@ -13,7 +13,7 @@ const endDateEl = document.getElementById("end-date");
 const endHourEl = document.getElementById("end-hour");
 const endMinuteEl = document.getElementById("end-minute");
 const endSecondEl = document.getElementById("end-second");
-const resetRangeBtn = document.getElementById("reset-range");
+const rangeButtons = Array.from(document.querySelectorAll(".range-btn"));
 const emptyEl = document.getElementById("empty");
 const ctx = document.getElementById("chart").getContext("2d");
 const presetButtons = Array.from(document.querySelectorAll(".preset-btn"));
@@ -93,16 +93,18 @@ function formatDateTime(value) {
     }).format(new Date(value));
 }
 
-function setRangeToLast24Hours() {
+function setRangeToLastHours(hours) {
+    const rangeHours = Number(hours);
+    if (!Number.isFinite(rangeHours) || rangeHours <= 0) return;
     const now = new Date();
-    const yesterday = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+    const start = new Date(now.getTime() - rangeHours * 60 * 60 * 1000);
     const pad = (num) => String(num).padStart(2, "0");
     const toDateValue = (date) => `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
-    startDateEl.value = toDateValue(yesterday);
+    startDateEl.value = toDateValue(start);
     endDateEl.value = toDateValue(now);
-    startHourEl.value = pad(yesterday.getHours());
-    startMinuteEl.value = pad(yesterday.getMinutes());
-    startSecondEl.value = pad(yesterday.getSeconds());
+    startHourEl.value = pad(start.getHours());
+    startMinuteEl.value = pad(start.getMinutes());
+    startSecondEl.value = pad(start.getSeconds());
     endHourEl.value = pad(now.getHours());
     endMinuteEl.value = pad(now.getMinutes());
     endSecondEl.value = pad(now.getSeconds());
@@ -493,9 +495,11 @@ document.getElementById("apply").addEventListener("click", () => {
     loadChart();
 });
 
-resetRangeBtn.addEventListener("click", () => {
-    setRangeToLast24Hours();
-    loadChart();
+rangeButtons.forEach((button) => {
+    button.addEventListener("click", () => {
+        setRangeToLastHours(button.getAttribute("data-hours"));
+        loadChart();
+    });
 });
 
 refreshCurrentBtn.addEventListener("click", () => {
@@ -510,7 +514,7 @@ presetButtons.forEach((button) => {
 });
 
 const savedState = loadState();
-setRangeToLast24Hours();
+setRangeToLastHours(24);
 
 const initialSeries = Array.isArray(savedState && savedState.series) && savedState.series.length
     ? savedState.series

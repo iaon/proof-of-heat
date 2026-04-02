@@ -59,3 +59,9 @@ pre {
     border-radius: 6px;
     overflow-x: auto;
 }
+
+.page-footer {
+    margin-top: 24px;
+    font-size: 12px;
+    text-align: right;
+}

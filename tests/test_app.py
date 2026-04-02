@@ -155,6 +155,7 @@ def build_routes(tmp_path, monkeypatch, parsed_settings=None, latest_payloads=No
     monkeypatch.setattr(main, "HTMLResponse", HTMLResponse, raising=False)
     monkeypatch.setattr(main, "JSONResponse", JSONResponse, raising=False)
     monkeypatch.setattr(main, "_startup_error", None)
+    monkeypatch.setattr(main, "APP_VERSION", "1.2.3-testsha", raising=False)
 
     app = main.create_app(AppConfig(data_dir=tmp_path))
     routes = {}
@@ -198,7 +199,16 @@ def test_ui_served(tmp_path, monkeypatch):
     routes = build_routes(tmp_path, monkeypatch)
     resp = routes["/"](make_request("/"))
     assert resp.status_code == 200
-    assert "proof-of-heat MVP" in resp.body.decode()
+    markup = resp.body.decode()
+    assert "proof-of-heat MVP" in markup
+    assert "Version 1.2.3-testsha" in markup
+
+
+def test_create_app_logs_version_on_startup(tmp_path, monkeypatch, caplog):
+    caplog.set_level("INFO", logger="proof_of_heat")
+    build_routes(tmp_path, monkeypatch)
+
+    assert "Starting proof-of-heat FastAPI app version 1.2.3-testsha" in caplog.text
 
 
 def test_ui_respects_root_path(tmp_path, monkeypatch):
@@ -213,16 +223,23 @@ def test_ui_respects_root_path(tmp_path, monkeypatch):
     assert 'href="/app/heating-curve"' in ui_markup
     assert 'id="control-inputs"' in ui_markup
     assert 'const rootPath = "/app";' in ui_markup
+    assert 'Version 1.2.3-testsha' in ui_markup
 
     config_resp = routes["/config"](make_request("/config", root_path="/app"))
     assert config_resp.status_code == 200
-    assert 'const rootPath = "/app";' in config_resp.body.decode()
+    config_markup = config_resp.body.decode()
+    assert 'const rootPath = "/app";' in config_markup
+    assert 'Version 1.2.3-testsha' in config_markup
 
     metrics_resp = routes["/metrics"](make_request("/metrics", root_path="/app"))
     assert metrics_resp.status_code == 200
     metrics_markup = metrics_resp.body.decode()
     assert 'const rootPath = "/app";' in metrics_markup
     assert 'data-preset="economics-rates"' not in metrics_markup
+    assert 'data-hours="1"' in metrics_markup
+    assert 'data-hours="3"' in metrics_markup
+    assert 'data-hours="24"' in metrics_markup
+    assert 'Version 1.2.3-testsha' in metrics_markup
 
     economics_resp = routes["/economics"](make_request("/economics", root_path="/app"))
     assert economics_resp.status_code == 200
@@ -230,6 +247,10 @@ def test_ui_respects_root_path(tmp_path, monkeypatch):
     assert 'const rootPath = "/app";' in economics_markup
     assert 'data-preset="rates"' in economics_markup
     assert 'id="economics-current"' in economics_markup
+    assert 'data-hours="1"' in economics_markup
+    assert 'data-hours="3"' in economics_markup
+    assert 'data-hours="24"' in economics_markup
+    assert 'Version 1.2.3-testsha' in economics_markup
 
 
 def test_status_snapshot(tmp_path, monkeypatch):

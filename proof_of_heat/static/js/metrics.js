@@ -9,7 +9,7 @@ const endDateEl = document.getElementById("end-date");
 const endHourEl = document.getElementById("end-hour");
 const endMinuteEl = document.getElementById("end-minute");
 const endSecondEl = document.getElementById("end-second");
-const resetRangeBtn = document.getElementById("reset-range");
+const rangeButtons = Array.from(document.querySelectorAll(".range-btn"));
 const emptyEl = document.getElementById("empty");
 const ctx = document.getElementById("chart").getContext("2d");
 let chart;
@@ -82,12 +82,14 @@ function parseLocalInputToMs(dateValue, hourValue, minuteValue, secondValue) {
     return date ? date.getTime() : null;
 }
 
-function applyLast24HoursRange() {
+function applyLastHoursRange(hours) {
+    const rangeHours = Number(hours);
+    if (!Number.isFinite(rangeHours) || rangeHours <= 0) return;
     const now = new Date();
-    const yesterday = new Date(now.getTime() - 24 * 60 * 60 * 1000);
-    startDateEl.value = toDateInputValue(yesterday);
+    const start = new Date(now.getTime() - rangeHours * 60 * 60 * 1000);
+    startDateEl.value = toDateInputValue(start);
     endDateEl.value = toDateInputValue(now);
-    const startParts = toTimeParts(yesterday);
+    const startParts = toTimeParts(start);
     const endParts = toTimeParts(now);
     startHourEl.value = startParts.hour;
     startMinuteEl.value = startParts.minute;
@@ -453,13 +455,16 @@ document.getElementById("apply").addEventListener("click", () => {
     persistState();
     loadChart();
 });
-resetRangeBtn.addEventListener("click", () => {
-    applyLast24HoursRange();
-    loadChart();
+
+rangeButtons.forEach((button) => {
+    button.addEventListener("click", () => {
+        applyLastHoursRange(button.getAttribute("data-hours"));
+        loadChart();
+    });
 });
 
 const savedState = loadState();
-applyLast24HoursRange();
+applyLastHoursRange(24);
 
 const initialSeries = Array.isArray(savedState && savedState.series) && savedState.series.length
     ? savedState.series
