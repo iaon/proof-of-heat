@@ -81,6 +81,7 @@ HEATING_CURVE_DEFAULTS: Dict[str, Any] = {
     "max_supply_temp_c": 60.0,
 }
 FIXED_SUPPLY_TEMP_PERCENT_PER_C = 15.0
+_APP_STARTED_AT_UNIX = int(datetime.now(timezone.utc).timestamp())
 
 try:  # Lazy import to allow a diagnostic ASGI fallback if dependencies are missing
     from apscheduler.schedulers.background import BackgroundScheduler
@@ -170,9 +171,23 @@ def _estimate_power_percent(current_power_w: float | None, baseline_power_w: flo
     return max(0, min(100, estimated))
 
 
+def _miner_started_before_app(status: Any, summary: dict[str, Any] | None) -> bool:
+    if not isinstance(status, dict) or not isinstance(summary, dict):
+        return False
+    sample_ts = _safe_int(status.get("when"))
+    bootup_time = _safe_int(summary.get("bootup-time"))
+    if sample_ts is None or bootup_time is None or bootup_time < 0:
+        return False
+    miner_started_at = sample_ts - bootup_time
+    return miner_started_at < _APP_STARTED_AT_UNIX
+
+
 @dataclass
 class FixedSupplyTempRuntimeState:
     signature: tuple[Any, ...] | None = None
+    startup_recalibration_decided: bool = False
+    startup_recalibration_needed: bool = False
+    startup_full_power_requested: bool = False
     calibration_requested: bool = False
     calibration_complete: bool = False
     baseline_power_w: float | None = None
@@ -180,6 +195,9 @@ class FixedSupplyTempRuntimeState:
 
     def reset(self, signature: tuple[Any, ...] | None = None) -> None:
         self.signature = signature
+        self.startup_recalibration_decided = False
+        self.startup_recalibration_needed = False
+        self.startup_full_power_requested = False
         self.calibration_requested = False
         self.calibration_complete = False
         self.baseline_power_w = None
@@ -452,6 +470,56 @@ def _apply_fixed_supply_temp_heating_mode(
     current_power_limit = _safe_int(summary.get("power-limit"))
     up_freq_finish = _safe_int(summary.get("up-freq-finish"))
     current_power, current_power_key = _extract_whatsminer_current_power(summary)
+    bootup_time = _safe_int(summary.get("bootup-time"))
+
+    if not state.startup_recalibration_decided:
+        state.startup_recalibration_needed = _miner_started_before_app(status, summary)
+        state.startup_recalibration_decided = True
+        logger.debug(
+            "Fixed supply temp startup recalibration decision: needed=%r bootup_time=%r app_started_at=%s sample_when=%r",
+            state.startup_recalibration_needed,
+            bootup_time,
+            _APP_STARTED_AT_UNIX,
+            status.get("when") if isinstance(status, dict) else None,
+        )
+
+    if not state.calibration_complete and state.startup_recalibration_needed:
+        if not state.startup_full_power_requested:
+            logger.info(
+                "Fixed supply temp mode detected miner older than app start; forcing power_percent=100 before baseline capture"
+            )
+            response = miner.set_power_percent(100)
+            logger.debug("Fixed supply temp mode startup set_power_percent response: %r", response)
+            if _response_has_error(response):
+                logger.error(
+                    "Fixed supply temp mode failed to force power_percent=100 for startup recalibration: response=%r",
+                    response,
+                )
+                return response
+            state.startup_full_power_requested = True
+            state.calibration_requested = True
+            state.baseline_power_w = None
+            state.last_power_percent = 100
+            return response
+        if up_freq_finish != 1:
+            logger.debug(
+                "Fixed supply temp mode waiting for startup recalibration ramp to complete: up-freq-finish=%r",
+                up_freq_finish,
+            )
+            return None
+        if current_power is None or current_power <= 0:
+            logger.warning(
+                "Fixed supply temp mode skipped: no valid current power while waiting for startup recalibration baseline"
+            )
+            return None
+        state.calibration_complete = True
+        state.baseline_power_w = current_power
+        state.last_power_percent = 100
+        logger.info(
+            "Fixed supply temp mode captured startup baseline power %.1fW from %s as 100%%",
+            current_power,
+            current_power_key or "unknown",
+        )
 
     if not state.calibration_complete and current_power_limit != max_power and not state.calibration_requested:
         logger.info(
