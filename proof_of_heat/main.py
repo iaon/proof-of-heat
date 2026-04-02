@@ -544,19 +544,24 @@ def _apply_fixed_supply_temp_heating_mode(
     if baseline_power_w > 0 and min_power is not None and min_power > 0:
         min_percent = min(100, max(0, int(math.ceil((min_power / baseline_power_w) * 100))))
 
+    current_reference_percent = (
+        reported_power_percent
+        if reported_power_percent is not None
+        else (state.last_power_percent if state.last_power_percent is not None else 100)
+    )
     desired_percent = int(
         round(
             max(
                 min_percent,
                 min(
                     100.0,
-                    100.0 + (effective_error_c * FIXED_SUPPLY_TEMP_PERCENT_PER_C),
+                    current_reference_percent + (effective_error_c * FIXED_SUPPLY_TEMP_PERCENT_PER_C),
                 ),
             )
         )
     )
     logger.debug(
-        "Fixed supply temp control decision: raw=%.2fC corrected=%.2fC target=%.2fC error=%.2fC effective_error=%.2fC tolerance=%.2fC baseline_power_w=%.1f min_power=%r min_percent=%s desired_percent=%s reported_percent=%r last_percent=%r source=%r",
+        "Fixed supply temp control decision: raw=%.2fC corrected=%.2fC target=%.2fC error=%.2fC effective_error=%.2fC tolerance=%.2fC baseline_power_w=%.1f min_power=%r min_percent=%s reference_percent=%s desired_percent=%s reported_percent=%r last_percent=%r source=%r",
         measurement.raw_value_c,
         measured_supply_temp,
         target_supply_temp,
@@ -566,6 +571,7 @@ def _apply_fixed_supply_temp_heating_mode(
         baseline_power_w,
         min_power,
         min_percent,
+        current_reference_percent,
         desired_percent,
         reported_power_percent,
         state.last_power_percent,
