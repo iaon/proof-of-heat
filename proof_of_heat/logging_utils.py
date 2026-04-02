@@ -5,6 +5,8 @@ import os
 
 TRACE_LEVEL = 5
 RESET = "\033[0m"
+LOG_FORMAT = "%(asctime)s %(levelname)8s: %(message)s"
+LOG_DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
 LEVEL_COLORS = {
     TRACE_LEVEL: "\033[36m",
     logging.DEBUG: "\033[92m",
@@ -23,12 +25,9 @@ class ColorFormatter(logging.Formatter):
         color = LEVEL_COLORS.get(record.levelno)
         if not color:
             return message
-        level_name = record.levelname
-        prefix = f"{level_name}:"
-        colored_prefix = f"{color}{prefix}{RESET}"
-        if message.startswith(prefix):
-            return f"{colored_prefix}{message[len(prefix):]}"
-        return message
+        level_marker = f"{record.levelname}:"
+        colored_marker = f"{color}{level_marker}{RESET}"
+        return message.replace(level_marker, colored_marker, 1)
 
 
 def ensure_trace_level() -> None:
@@ -46,7 +45,7 @@ def ensure_trace_level() -> None:
 
 def configure_logging(level: int) -> None:
     handler = logging.StreamHandler()
-    handler.setFormatter(ColorFormatter("%(levelname)s:%(name)s:%(message)s"))
+    handler.setFormatter(ColorFormatter(LOG_FORMAT, datefmt=LOG_DATE_FORMAT))
 
     root = logging.getLogger()
     root.handlers.clear()
