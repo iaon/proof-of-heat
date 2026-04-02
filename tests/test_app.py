@@ -660,6 +660,66 @@ def test_fixed_supply_temp_mode_forces_full_power_at_start_when_miner_is_older_t
     assert state.baseline_power_w is None
 
 
+def test_fixed_supply_temp_mode_waits_for_existing_ramp_before_startup_full_power_request(monkeypatch):
+    monkeypatch.setattr(main, "_APP_STARTED_AT_UNIX", 2_000, raising=False)
+    DummyMiner.fetch_status_response = {
+        "code": 0,
+        "when": 10_000,
+        "msg": {
+            "summary": {
+                "bootup-time": 9_000,
+                "power-limit": 1644,
+                "up-freq-finish": 0,
+                "power-realtime": 1587,
+            }
+        },
+    }
+    DummyMiner.set_power_limit_calls = []
+    DummyMiner.set_power_percent_calls = []
+    state = main.FixedSupplyTempRuntimeState()
+    miner = DummyMiner()
+
+    result = main._apply_fixed_supply_temp_heating_mode(
+        miner,
+        {
+            "devices": {
+                "whatsminer": [
+                    {
+                        "device_id": "miner01",
+                        "host": "miner.local",
+                        "max_power": 3800,
+                        "min_power": 1600,
+                    }
+                ]
+            },
+            "control_inputs": {"max_age_seconds": 180},
+            "heating_mode": {
+                "enabled": True,
+                "type": "fixed_supply_temp",
+                "params": {
+                    "target_supply_temp_c": 42.0,
+                    "tolerance_c": 1.0,
+                    "correction": 0.0,
+                },
+            },
+        },
+        {
+            "ts": int(main.datetime.now(main.timezone.utc).timestamp() * 1000),
+            "supply_temp": 40.6,
+        },
+        runtime_state=state,
+    )
+
+    assert result is None
+    assert DummyMiner.set_power_percent_calls == []
+    assert DummyMiner.set_power_limit_calls == []
+    assert state.startup_recalibration_decided is True
+    assert state.startup_recalibration_needed is True
+    assert state.startup_full_power_requested is False
+    assert state.calibration_complete is False
+    assert state.baseline_power_w is None
+
+
 def test_fixed_supply_temp_mode_captures_startup_baseline_after_forcing_full_power(monkeypatch):
     monkeypatch.setattr(main, "_APP_STARTED_AT_UNIX", 2_000, raising=False)
     DummyMiner.fetch_status_response = {

@@ -485,6 +485,12 @@ def _apply_fixed_supply_temp_heating_mode(
 
     if not state.calibration_complete and state.startup_recalibration_needed:
         if not state.startup_full_power_requested:
+            if up_freq_finish != 1:
+                logger.debug(
+                    "Fixed supply temp mode waiting for existing miner ramp to complete before startup recalibration request: up-freq-finish=%r",
+                    up_freq_finish,
+                )
+                return None
             logger.info(
                 "Fixed supply temp mode detected miner older than app start; forcing power_percent=100 before baseline capture"
             )
