@@ -14,6 +14,7 @@ class DummyMiner:
     set_power_limit_calls = []
     set_power_percent_calls = []
     start_calls = 0
+    start_response = {"status": "started"}
     init_kwargs = []
 
     def __init__(self, *args, **kwargs):
@@ -33,7 +34,7 @@ class DummyMiner:
 
     def start(self):
         type(self).start_calls += 1
-        return {"status": "started"}
+        return self.start_response
 
     def stop(self):
         return {"status": "stopped"}
@@ -133,6 +134,7 @@ def build_routes(tmp_path, monkeypatch, parsed_settings=None, latest_payloads=No
     DummyMiner.set_power_limit_calls = []
     DummyMiner.set_power_percent_calls = []
     DummyMiner.start_calls = 0
+    DummyMiner.start_response = {"status": "started"}
     DummyMiner.init_kwargs = []
     main._clear_fixed_supply_temp_runtime_state()
 
@@ -482,10 +484,10 @@ def test_fixed_power_mode_waits_until_up_freq_finish():
     assert DummyMiner.set_power_limit_calls == []
 
 
-def test_fixed_supply_temp_mode_switches_to_normal_mode_before_calibration():
-    DummyMiner.start_calls = 0
+def test_fixed_supply_temp_mode_sets_calibration_power_limit_on_first_tick():
     DummyMiner.set_power_limit_calls = []
     DummyMiner.set_power_percent_calls = []
+    DummyMiner.fetch_status_response = {"code": 0, "msg": {"summary": {"power-limit": 3200, "up-freq-finish": 0, "power": 2500}}}
     state = main.FixedSupplyTempRuntimeState()
     miner = DummyMiner()
 
@@ -517,10 +519,8 @@ def test_fixed_supply_temp_mode_switches_to_normal_mode_before_calibration():
         runtime_state=state,
     )
 
-    assert result == {"status": "started"}
-    assert DummyMiner.start_calls == 1
-    assert state.normal_mode_requested is True
-    assert DummyMiner.set_power_limit_calls == []
+    assert result == {"power_limit": 3800}
+    assert DummyMiner.set_power_limit_calls == [3800]
     assert DummyMiner.set_power_percent_calls == []
 
 
@@ -540,7 +540,6 @@ def test_fixed_supply_temp_mode_sets_calibration_power_limit():
     DummyMiner.start_calls = 0
     state = main.FixedSupplyTempRuntimeState(
         signature=("miner01", "miner.local", 4433, 3800, 1000),
-        normal_mode_requested=True,
     )
     miner = DummyMiner()
 
@@ -595,7 +594,6 @@ def test_fixed_supply_temp_mode_captures_baseline_and_updates_power_percent():
     DummyMiner.set_power_percent_calls = []
     state = main.FixedSupplyTempRuntimeState(
         signature=("miner01", "miner.local", 4433, 3800, 1000),
-        normal_mode_requested=True,
     )
     miner = DummyMiner()
 
@@ -653,7 +651,6 @@ def test_fixed_supply_temp_mode_uses_power_realtime_for_baseline_when_power_is_m
     DummyMiner.set_power_percent_calls = []
     state = main.FixedSupplyTempRuntimeState(
         signature=("miner01", "miner.local", 4433, 3800, 1000),
-        normal_mode_requested=True,
     )
     miner = DummyMiner()
 
@@ -711,7 +708,6 @@ def test_fixed_supply_temp_mode_proceeds_after_calibration_request_even_if_repor
     DummyMiner.set_power_percent_calls = []
     state = main.FixedSupplyTempRuntimeState(
         signature=("miner01", "miner.local", 4433, 3800, 1600),
-        normal_mode_requested=True,
         calibration_requested=True,
     )
     miner = DummyMiner()
@@ -770,7 +766,6 @@ def test_fixed_supply_temp_mode_retries_when_reported_power_is_still_near_baseli
     DummyMiner.set_power_percent_calls = []
     state = main.FixedSupplyTempRuntimeState(
         signature=("miner01", "miner.local", 4433, 3800, 1600),
-        normal_mode_requested=True,
         calibration_requested=True,
         calibration_complete=True,
         baseline_power_w=3115,
@@ -830,7 +825,6 @@ def test_fixed_supply_temp_mode_keeps_when_reported_power_matches_desired_percen
     DummyMiner.set_power_percent_calls = []
     state = main.FixedSupplyTempRuntimeState(
         signature=("miner01", "miner.local", 4433, 3800, 1600),
-        normal_mode_requested=True,
         calibration_requested=True,
         calibration_complete=True,
         baseline_power_w=3115,
@@ -890,7 +884,6 @@ def test_fixed_supply_temp_mode_skips_when_supply_temp_is_missing():
     DummyMiner.set_power_percent_calls = []
     state = main.FixedSupplyTempRuntimeState(
         signature=("miner01", "miner.local", 4433, 3800, 1000),
-        normal_mode_requested=True,
         calibration_complete=True,
         baseline_power_w=3000,
         last_power_percent=80,

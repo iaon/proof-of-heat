@@ -171,7 +171,6 @@ def _estimate_power_percent(current_power_w: float | None, baseline_power_w: flo
 @dataclass
 class FixedSupplyTempRuntimeState:
     signature: tuple[Any, ...] | None = None
-    normal_mode_requested: bool = False
     calibration_requested: bool = False
     calibration_complete: bool = False
     baseline_power_w: float | None = None
@@ -179,7 +178,6 @@ class FixedSupplyTempRuntimeState:
 
     def reset(self, signature: tuple[Any, ...] | None = None) -> None:
         self.signature = signature
-        self.normal_mode_requested = False
         self.calibration_requested = False
         self.calibration_complete = False
         self.baseline_power_w = None
@@ -439,13 +437,6 @@ def _apply_fixed_supply_temp_heating_mode(
     if state.signature != signature:
         logger.info("Fixed supply temp mode resetting runtime state for device %s", device.get("device_id"))
         state.reset(signature)
-
-    if not state.normal_mode_requested:
-        logger.info("Fixed supply temp mode switching miner to normal mode")
-        response = miner.start()
-        if not _response_has_error(response):
-            state.normal_mode_requested = True
-        return response
 
     status = miner.fetch_status()
     logger.debug("Fixed supply temp mode raw miner status: %r", status)
