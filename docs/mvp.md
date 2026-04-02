@@ -16,8 +16,12 @@ persistence). Use `--build` to ensure the image is refreshed after code changes
 or dependency updates:
 
 ```bash
-docker compose up --build
+./run_app.sh
 ```
+
+This wrapper keeps the displayed app version consistent between local runs and
+webhook-based deploys: release builds use `VERSION`, non-release builds use
+`VERSION-<shortsha>`.
 
 Alternatively, build the image without Compose:
 

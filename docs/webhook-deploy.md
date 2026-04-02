@@ -4,7 +4,7 @@
 
 ```
 git pull
-docker compose up --build -d app
+./run_app.sh
 ```
 
 Основной сервис и webhook-контейнер разделены:
@@ -30,7 +30,7 @@ PROJECT_ROOT=/absolute/path/to/proof-of-heat docker compose -f docker-compose.ym
 
 Основной сервис запускается как обычно:
 ```bash
-docker compose up --build -d app
+./run_app.sh
 ```
 
 Webhook запускается вручную отдельной командой:
@@ -40,10 +40,12 @@ docker compose -f docker-compose.yml -f docker-compose.webhook.yml up --build -d
 
 Конфиг хука расположен в `conf/webhook/hooks.yaml` и вызывает:
 ```
-git pull && docker compose up --build -d app
+git pull && ./run_app.sh
 ```
 
-Если нужно изменить команды или рабочую директорию — правьте этот файл.
+Скрипт `./run_app.sh` читает `VERSION`, определяет short SHA текущего коммита и считает сборку релизной только если на `HEAD` есть тег `VERSION` или `vVERSION`. Для релиза в контейнер уходит версия вида `0.1.0`, для обычной сборки — `0.1.0-<sha>`.
+
+Если нужно изменить команды или рабочую директорию — правьте этот файл. Если нужно изменить логику определения версии и compose-запуск — правьте `run_app.sh`.
 
 ## 1.1. SSH-ключ для `git pull`
 
