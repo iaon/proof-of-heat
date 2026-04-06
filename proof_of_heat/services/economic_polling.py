@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
+from zoneinfo import ZoneInfo
 
 from proof_of_heat.services.market_data import (
     CBR_BASE_CURRENCY,
@@ -69,6 +70,10 @@ class EconomicsPollResult:
     metrics: list[MetricSample]
 
 
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
 class EconomicsPoller:
     def __init__(
         self,
@@ -115,7 +120,8 @@ class EconomicsPoller:
 
     def poll(self, economics: dict[str, Any] | None = None) -> EconomicsPollResult:
         economics_cfg = economics if isinstance(economics, dict) else self.load_settings()
-        ts_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+        now_utc = _utc_now()
+        ts_ms = int(now_utc.timestamp() * 1000)
         if not isinstance(economics_cfg, dict):
             return EconomicsPollResult(
                 ts_ms=ts_ms,
@@ -148,6 +154,13 @@ class EconomicsPoller:
         metrics: list[MetricSample] = []
         exchange_stale_ms = _resolve_stale_after_ms(exchange_rate_cfg, default_seconds=7200)
         hashprice_stale_ms = _resolve_stale_after_ms(hashprice_cfg, default_seconds=7200)
+        electricity_price_fiat_kwh, electricity_error = _resolve_electricity_price_fiat_kwh(
+            electricity_cfg=electricity_cfg,
+            location_cfg=self._settings.get("location") if isinstance(self._settings, dict) else None,
+            now_utc=now_utc,
+        )
+        if electricity_error:
+            payload["errors"].append(electricity_error)
 
         crypto_usd: float | None = None
         usd_fiat: float | None = 1.0 if fiat == USD_CURRENCY else None
@@ -155,9 +168,6 @@ class EconomicsPoller:
         network_hashrate_th_s: float | None = None
         avg_block_reward_crypto: float | None = None
         hashprice_crypto_th_day: float | None = None
-        electricity_price_fiat_kwh = _safe_float(
-            electricity_cfg.get("price_per_kwh") if isinstance(electricity_cfg, dict) else None
-        )
         power_rate_j_th: float | None = None
         power_rate_source: str | None = None
 
@@ -548,6 +558,77 @@ def _resolve_exchange_integration(
     return str(value) if value is not None else default
 
 
+def _resolve_electricity_price_fiat_kwh(
+    electricity_cfg: Any,
+    location_cfg: Any,
+    now_utc: datetime,
+) -> tuple[float | None, str | None]:
+    if not isinstance(electricity_cfg, dict):
+        return None, None
+
+    mode = str(electricity_cfg.get("mode") or "").strip().lower()
+    if not mode:
+        mode = "time_of_day" if "tariffs" in electricity_cfg else "fixed"
+
+    if mode == "fixed":
+        if "tariffs" in electricity_cfg:
+            return None, "Electricity fixed mode does not allow tariffs"
+        price_per_kwh = _safe_float(electricity_cfg.get("price_per_kwh"))
+        if price_per_kwh is None or price_per_kwh < 0:
+            return None, "Electricity fixed mode requires non-negative price_per_kwh"
+        return price_per_kwh, None
+
+    if mode != "time_of_day":
+        return None, f"Unsupported electricity mode: {mode}"
+
+    if "price_per_kwh" in electricity_cfg:
+        return None, "Electricity time_of_day mode does not allow top-level price_per_kwh"
+
+    tariffs = electricity_cfg.get("tariffs")
+    if not isinstance(tariffs, list) or not tariffs:
+        return None, "Electricity time_of_day mode requires a non-empty tariffs list"
+
+    timezone_name = str(
+        electricity_cfg.get("timezone")
+        or (location_cfg.get("timezone") if isinstance(location_cfg, dict) else "")
+        or ""
+    ).strip()
+    if not timezone_name:
+        return None, "Electricity time_of_day mode requires timezone or location.timezone"
+    try:
+        local_timezone = ZoneInfo(timezone_name)
+    except Exception:
+        return None, f"Invalid electricity timezone: {timezone_name}"
+
+    normalized_tariffs: list[tuple[int, float]] = []
+    seen_starts: set[int] = set()
+    for tariff in tariffs:
+        if not isinstance(tariff, dict):
+            return None, "Electricity tariffs must be mappings"
+        start = str(tariff.get("start") or "").strip()
+        start_minutes = _parse_time_of_day_to_minutes(start)
+        if start_minutes is None:
+            return None, f"Invalid electricity tariff start: {start}"
+        if start_minutes in seen_starts:
+            return None, f"Duplicate electricity tariff start: {start}"
+        price_per_kwh = _safe_float(tariff.get("price_per_kwh"))
+        if price_per_kwh is None or price_per_kwh < 0:
+            return None, f"Invalid electricity tariff price_per_kwh at {start}"
+        seen_starts.add(start_minutes)
+        normalized_tariffs.append((start_minutes, price_per_kwh))
+
+    normalized_tariffs.sort(key=lambda item: item[0])
+    local_now = now_utc.astimezone(local_timezone)
+    current_minutes = local_now.hour * 60 + local_now.minute
+    current_price = normalized_tariffs[-1][1]
+    for start_minutes, price_per_kwh in normalized_tariffs:
+        if current_minutes >= start_minutes:
+            current_price = price_per_kwh
+            continue
+        break
+    return current_price, None
+
+
 def _resolve_stale_after_ms(section: Any, default_seconds: int) -> int:
     if not isinstance(section, dict):
         return default_seconds * 1000
@@ -679,6 +760,20 @@ def _extract_mempool_avg_block_reward(payload: dict[str, Any]) -> float | None:
     if total_reward_sats is None:
         return None
     return (total_reward_sats / 100_000_000) / block_count
+
+
+def _parse_time_of_day_to_minutes(value: str) -> int | None:
+    hour_text, separator, minute_text = value.partition(":")
+    if separator != ":":
+        return None
+    try:
+        hours = int(hour_text)
+        minutes = int(minute_text)
+    except ValueError:
+        return None
+    if not (0 <= hours <= 23 and 0 <= minutes <= 59):
+        return None
+    return hours * 60 + minutes
 
 
 def _sanitize_currency_code(value: str) -> str:

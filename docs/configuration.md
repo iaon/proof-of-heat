@@ -10,6 +10,7 @@ The file is a plain YAML mapping with these top-level sections:
 - `control_inputs` — normalized signals used for heating control.
 - `heating_mode` — active heating control strategy and its parameters.
 - `heating_curve` — heating curve parameters and boost rules.
+- `economics` — exchange rates, hashprice polling, and electricity tariff settings.
 
 ## Example
 
@@ -117,6 +118,31 @@ heating_curve:
   force_max_power_margin_c: 5.0
   min_supply_temp_c: 25.0
   max_supply_temp_c: 60.0
+
+economics:
+  enabled: true
+  currencies:
+    crypto: BTC
+    fiat: RUB
+  exchange_rate:
+    integrations:
+      crypto_usd: mempool_space
+      usd_fiat: cbr
+    refresh_interval: 3600
+    stale_after: 7200
+  hashprice:
+    integration: mempool_space
+    reward_stats_blocks: 144
+    hashrate_window: 1m
+    refresh_interval: 3600
+    stale_after: 7200
+  electricity:
+    mode: time_of_day
+    tariffs:
+      - start: "07:00"
+        price_per_kwh: 8.0
+      - start: "23:00"
+        price_per_kwh: 5.0
 ```
 
 ## Section Details
@@ -253,6 +279,60 @@ Current status:
 - `fixed_power` and `fixed_supply_temp` have runtime control loops.
 - `fixed_supply_temp` first sets the miner `power_limit` to device `max_power`, waits for `up-freq-finish`, records the resulting actual miner power as the `100%` baseline, and then regulates output through `set.miner.power_percent`.
 - Existing runtime control routes still use the legacy `mode` and `target_temperature_c` fields.
+
+### `economics`
+
+`economics` defines market-data polling and electricity cost inputs used by the profitability view.
+
+Supported fields:
+
+- `enabled` — optional boolean, default `true`.
+- `currencies.crypto` — currently `BTC` for the built-in `mempool_space` adapters.
+- `currencies.fiat` — fiat code used for derived metrics and UI labels, for example `RUB` or `EUR`.
+- `exchange_rate` — configuration for `crypto/USD` and `USD/fiat` polling.
+- `hashprice` — configuration for network hashrate and average block reward polling.
+- `electricity` — local electricity tariff settings.
+
+Current built-in integrations:
+
+- `exchange_rate.integrations.crypto_usd: mempool_space`
+- `exchange_rate.integrations.usd_fiat: cbr`
+- `hashprice.integration: mempool_space`
+
+`electricity` supports two modes:
+
+Fixed tariff:
+
+```yaml
+economics:
+  electricity:
+    mode: fixed
+    price_per_kwh: 5.50
+```
+
+Time-of-day tariff:
+
+```yaml
+economics:
+  electricity:
+    mode: time_of_day
+    timezone: Europe/Moscow
+    tariffs:
+      - start: "07:00"
+        price_per_kwh: 8.00
+      - start: "23:00"
+        price_per_kwh: 5.00
+```
+
+Time-of-day tariff rules:
+
+- `tariffs` must be a non-empty list.
+- `start` uses `HH:MM` in 24-hour local time.
+- The active tariff is the last tariff whose `start` is less than or equal to the current local time.
+- If current time is earlier than the first `start`, the last tariff in the daily schedule is used.
+- `timezone` is optional; when omitted, `location.timezone` is used.
+- In `fixed` mode, use `price_per_kwh` and do not define `tariffs`.
+- In `time_of_day` mode, use `tariffs` and do not define top-level `price_per_kwh`.
 
 ## Source of Truth
 

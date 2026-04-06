@@ -777,6 +777,7 @@ def test_economics_metrics_are_computed_and_persisted(monkeypatch, tmp_path):
                 "stale_after": 7200,
             },
             "electricity": {
+                "mode": "fixed",
                 "price_per_kwh": 0.06,
             },
         },
@@ -915,6 +916,7 @@ def test_economics_job_is_scheduled_without_devices(monkeypatch, tmp_path):
                 "refresh_interval": 7200,
             },
             "electricity": {
+                "mode": "fixed",
                 "price_per_kwh": 5.5,
             },
         }
@@ -950,6 +952,7 @@ def test_economics_is_polled_immediately_on_start(monkeypatch, tmp_path):
                 "refresh_interval": 3600,
             },
             "electricity": {
+                "mode": "fixed",
                 "price_per_kwh": 5.5,
             },
         }
@@ -996,6 +999,7 @@ def test_economics_metadata_includes_stale_after_by_metric(tmp_path):
                 "stale_after": 7200,
             },
             "electricity": {
+                "mode": "fixed",
                 "price_per_kwh": 0.06,
             },
         }
@@ -1009,3 +1013,96 @@ def test_economics_metadata_includes_stale_after_by_metric(tmp_path):
     assert metadata["stale_after_ms_by_metric"]["exchange_rate_usd_eur"] == 5_400_000
     assert metadata["stale_after_ms_by_metric"]["hashprice_btc_th_day"] == 7_200_000
     assert metadata["stale_after_ms_by_metric"]["hashcost_eur_th_day"] == 7_200_000
+
+
+def test_economics_time_of_day_tariff_uses_location_timezone(monkeypatch, tmp_path):
+    settings = {
+        "location": {
+            "timezone": "Europe/Moscow",
+        },
+        "economics": {
+            "enabled": True,
+            "currencies": {
+                "crypto": "BTC",
+                "fiat": "RUB",
+            },
+            "exchange_rate": {
+                "integrations": {
+                    "crypto_usd": "mempool_space",
+                    "usd_fiat": "cbr",
+                },
+                "refresh_interval": 3600,
+                "stale_after": 7200,
+            },
+            "hashprice": {
+                "integration": "mempool_space",
+                "reward_stats_blocks": 144,
+                "hashrate_window": "1m",
+                "refresh_interval": 3600,
+                "stale_after": 7200,
+            },
+            "electricity": {
+                "mode": "time_of_day",
+                "tariffs": [
+                    {
+                        "start": "07:00",
+                        "price_per_kwh": 8.0,
+                    },
+                    {
+                        "start": "23:00",
+                        "price_per_kwh": 5.0,
+                    },
+                ],
+            },
+        },
+    }
+
+    monkeypatch.setattr(
+        economic_polling,
+        "_utc_now",
+        lambda: datetime(2026, 4, 6, 20, 30, tzinfo=timezone.utc),
+    )
+    monkeypatch.setattr(
+        economic_polling,
+        "fetch_mempool_prices",
+        lambda **kwargs: {
+            "provider": "mempool_space",
+            "timestamp": 1774739307,
+            "prices": {"USD": 100000},
+        },
+    )
+    monkeypatch.setattr(
+        economic_polling,
+        "fetch_cbr_daily_rates",
+        lambda **kwargs: {
+            "provider": "cbr",
+            "timestamp": "01.04.2026",
+            "base_currency": "RUB",
+            "rates": {"RUB": 1.0, "USD": 90.5},
+        },
+    )
+    monkeypatch.setattr(
+        economic_polling,
+        "fetch_mempool_reward_stats",
+        lambda **kwargs: {
+            "provider": "mempool_space",
+            "block_count": 144,
+            "payload": {
+                "totalReward": "90000000000",
+            },
+        },
+    )
+    monkeypatch.setattr(
+        economic_polling,
+        "fetch_mempool_hashrate",
+        lambda **kwargs: {
+            "provider": "mempool_space",
+            "time_period": "1m",
+            "payload": {"currentHashrate": 500_000_000_000_000_000_000},
+        },
+    )
+
+    poller = DevicePoller(settings, data_dir=tmp_path)
+    payload = poller.poll_economics(settings["economics"])
+
+    assert payload["derived"]["electricity_price_rub_kwh"] == 5.0

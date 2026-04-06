@@ -110,6 +110,16 @@ def test_default_settings_yaml_includes_economics():
             "stale_after": 7200,
         },
         "electricity": {
-            "price_per_kwh": 5.5,
+            "mode": "time_of_day",
+            "tariffs": [
+                {
+                    "start": "07:00",
+                    "price_per_kwh": 8.0,
+                },
+                {
+                    "start": "23:00",
+                    "price_per_kwh": 5.0,
+                },
+            ],
         },
     }
