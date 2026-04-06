@@ -7,6 +7,16 @@ from datetime import datetime, timezone
 from typing import Any
 
 FIXED_SUPPLY_TEMP_PERCENT_PER_C = 15.0
+ROOM_TARGET_SUPPLY_TEMP_TOLERANCE_C = 1.0
+HEATING_CURVE_DEFAULTS: dict[str, Any] = {
+    "slope": 6.0,
+    "exponent": 0.4,
+    "offset": 0.0,
+    "force_max_power_below_target": True,
+    "force_max_power_margin_c": 5.0,
+    "min_supply_temp_c": 25.0,
+    "max_supply_temp_c": 60.0,
+}
 
 
 def extract_whatsminer_summary(response: Any) -> dict[str, Any] | None:
@@ -35,6 +45,18 @@ def safe_float(value: Any) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def safe_bool(value: Any) -> bool | None:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in {"true", "1", "yes", "on"}:
+            return True
+        if lowered in {"false", "0", "no", "off"}:
+            return False
+    return None
 
 
 def response_has_error(response: Any) -> bool:
@@ -119,6 +141,81 @@ class FixedSupplyTempMeasurement:
 
 def clear_fixed_supply_temp_runtime_state() -> None:
     _FIXED_SUPPLY_TEMP_RUNTIME_STATE.reset()
+
+
+def resolve_room_target_temp_c(heating_mode: dict[str, Any] | None) -> float | None:
+    if not isinstance(heating_mode, dict):
+        return None
+    params = heating_mode.get("params")
+    if isinstance(params, dict):
+        target_from_params = safe_float(params.get("target_room_temp_c"))
+        if target_from_params is not None:
+            return target_from_params
+    return safe_float(heating_mode.get("target_room_temp_c"))
+
+
+def resolve_heating_curve(settings_data: dict[str, Any]) -> dict[str, Any]:
+    curve = settings_data.get("heating_curve") if isinstance(settings_data, dict) else None
+    if not isinstance(curve, dict):
+        curve = {}
+
+    slope = safe_float(curve.get("slope"))
+    exponent = safe_float(curve.get("exponent"))
+    offset = safe_float(curve.get("offset"))
+    force_max_power_below_target = safe_bool(curve.get("force_max_power_below_target"))
+    force_max_power_margin_c = safe_float(curve.get("force_max_power_margin_c"))
+    min_supply_temp_c = safe_float(curve.get("min_supply_temp_c"))
+    max_supply_temp_c = safe_float(curve.get("max_supply_temp_c"))
+
+    resolved = {
+        "slope": max(0.0, slope if slope is not None else HEATING_CURVE_DEFAULTS["slope"]),
+        "exponent": max(0.0, exponent if exponent is not None else HEATING_CURVE_DEFAULTS["exponent"]),
+        "offset": offset if offset is not None else HEATING_CURVE_DEFAULTS["offset"],
+        "force_max_power_below_target": (
+            force_max_power_below_target
+            if force_max_power_below_target is not None
+            else HEATING_CURVE_DEFAULTS["force_max_power_below_target"]
+        ),
+        "force_max_power_margin_c": max(
+            0.0,
+            force_max_power_margin_c
+            if force_max_power_margin_c is not None
+            else HEATING_CURVE_DEFAULTS["force_max_power_margin_c"],
+        ),
+        "min_supply_temp_c": (
+            min_supply_temp_c
+            if min_supply_temp_c is not None
+            else HEATING_CURVE_DEFAULTS["min_supply_temp_c"]
+        ),
+        "max_supply_temp_c": (
+            max_supply_temp_c
+            if max_supply_temp_c is not None
+            else HEATING_CURVE_DEFAULTS["max_supply_temp_c"]
+        ),
+    }
+    if resolved["max_supply_temp_c"] < resolved["min_supply_temp_c"]:
+        resolved["max_supply_temp_c"] = resolved["min_supply_temp_c"]
+    return resolved
+
+
+def compute_heating_curve_target_supply_temp(
+    *,
+    target_room_temp_c: float,
+    outdoor_temp_c: float,
+    heating_curve: dict[str, Any],
+) -> float:
+    # Outdoor temperatures above the room target would produce a negative base
+    # for fractional exponents. Treat that case as zero heating demand.
+    delta_c = max(0.0, target_room_temp_c - outdoor_temp_c)
+    target_supply_temp_c = (
+        heating_curve["slope"] * (delta_c ** heating_curve["exponent"])
+        + heating_curve["offset"]
+        + target_room_temp_c
+    )
+    return min(
+        heating_curve["max_supply_temp_c"],
+        max(heating_curve["min_supply_temp_c"], target_supply_temp_c),
+    )
 
 
 def resolve_control_interval_seconds(settings_data: dict[str, Any]) -> int:
@@ -311,6 +408,376 @@ def _resolve_fixed_supply_temp_measurement(
     return measurement
 
 
+def _apply_supply_temp_heating_mode(
+    miner: Any,
+    settings_data: dict[str, Any],
+    control_inputs: dict[str, Any] | None,
+    *,
+    target_supply_temp: float,
+    tolerance_c: float,
+    correction: float,
+    logger: logging.Logger,
+    app_started_at_unix: int,
+    default_port: int,
+    mode_name: str,
+    runtime_state: FixedSupplyTempRuntimeState | None = None,
+    forced_power_percent: int | None = None,
+    forced_power_reason: str | None = None,
+) -> dict[str, Any] | None:
+    if not isinstance(settings_data, dict):
+        logger.debug("%s skipped: settings payload is not a mapping", mode_name)
+        return None
+
+    device = get_primary_whatsminer_device_config(settings_data)
+    if device is None:
+        logger.warning("%s skipped: no valid whatsminer device configured", mode_name)
+        return None
+    max_power = safe_int(device.get("max_power"))
+    if max_power is None or max_power <= 0:
+        logger.warning("%s skipped: whatsminer max_power is missing or invalid", mode_name)
+        return None
+    min_power = safe_float(device.get("min_power"))
+    if min_power is not None and min_power < 0:
+        min_power = None
+
+    state = runtime_state or _FIXED_SUPPLY_TEMP_RUNTIME_STATE
+    signature = _build_fixed_supply_temp_signature(device, default_port=default_port)
+    if state.signature != signature:
+        logger.info("%s resetting runtime state for device %s", mode_name, device.get("device_id"))
+        state.reset(signature)
+
+    status = miner.fetch_status()
+    logger.debug("%s raw miner status: %r", mode_name, status)
+    summary = extract_whatsminer_summary(status)
+    if summary is None:
+        logger.warning(
+            "%s skipped: unable to extract Whatsminer summary from status response",
+            mode_name,
+        )
+        return None
+
+    current_power_limit = safe_int(summary.get("power-limit"))
+    up_freq_finish = safe_int(summary.get("up-freq-finish"))
+    current_power, current_power_key = extract_whatsminer_current_power(summary)
+    bootup_time = safe_int(summary.get("bootup-time"))
+
+    if not state.startup_recalibration_decided:
+        state.startup_recalibration_needed = miner_started_before_app(
+            status,
+            summary,
+            app_started_at_unix=app_started_at_unix,
+        )
+        state.startup_recalibration_decided = True
+        logger.debug(
+            "%s startup recalibration decision: needed=%r bootup_time=%r app_started_at=%s sample_when=%r",
+            mode_name,
+            state.startup_recalibration_needed,
+            bootup_time,
+            app_started_at_unix,
+            status.get("when") if isinstance(status, dict) else None,
+        )
+
+    if not state.calibration_complete and state.startup_recalibration_needed:
+        if not state.startup_full_power_requested:
+            if up_freq_finish != 1:
+                logger.debug(
+                    "%s waiting for existing miner ramp to complete before startup recalibration request: up-freq-finish=%r",
+                    mode_name,
+                    up_freq_finish,
+                )
+                return None
+            logger.info(
+                "%s detected miner older than app start; forcing power_percent=100 before baseline capture",
+                mode_name,
+            )
+            response = miner.set_power_percent(100)
+            logger.debug("%s startup set_power_percent response: %r", mode_name, response)
+            if response_has_error(response):
+                logger.error(
+                    "%s failed to force power_percent=100 for startup recalibration: response=%r",
+                    mode_name,
+                    response,
+                )
+                return response
+            state.startup_full_power_requested = True
+            state.calibration_requested = True
+            state.baseline_power_w = None
+            state.last_power_percent = 100
+            return response
+        if up_freq_finish != 1:
+            logger.debug(
+                "%s waiting for startup recalibration ramp to complete: up-freq-finish=%r",
+                mode_name,
+                up_freq_finish,
+            )
+            return None
+        if current_power is None or current_power <= 0:
+            logger.warning(
+                "%s skipped: no valid current power while waiting for startup recalibration baseline",
+                mode_name,
+            )
+            return None
+        state.calibration_complete = True
+        state.baseline_power_w = current_power
+        state.last_power_percent = 100
+        logger.info(
+            "%s captured startup baseline power %.1fW from %s as 100%%",
+            mode_name,
+            current_power,
+            current_power_key or "unknown",
+        )
+
+    if not state.calibration_complete and current_power_limit != max_power and not state.calibration_requested:
+        logger.info(
+            "%s setting miner power limit to calibration max %sW (current=%r)",
+            mode_name,
+            max_power,
+            current_power_limit,
+        )
+        response = miner.set_power_limit(max_power)
+        logger.debug("%s set_power_limit response: %r", mode_name, response)
+        if response_has_error(response):
+            logger.error(
+                "%s failed to set calibration power limit to %sW: response=%r",
+                mode_name,
+                max_power,
+                response,
+            )
+            return response
+        state.calibration_requested = True
+        state.calibration_complete = False
+        state.baseline_power_w = None
+        state.last_power_percent = None
+        return response
+
+    if not state.calibration_complete and up_freq_finish != 1:
+        logger.debug(
+            "%s waiting for frequency ramp to complete: up-freq-finish=%r",
+            mode_name,
+            up_freq_finish,
+        )
+        return None
+
+    if not state.calibration_complete:
+        if current_power is None or current_power <= 0:
+            available_power_fields = {
+                key: summary.get(key)
+                for key in ("power", "power-realtime", "power-5min", "power-limit")
+                if key in summary
+            }
+            logger.warning(
+                "%s skipped: summary does not contain a valid current power for calibration; available_power_fields=%r",
+                mode_name,
+                available_power_fields,
+            )
+            return None
+        if current_power_limit != max_power and state.calibration_requested:
+            logger.info(
+                "%s proceeding with calibration at reported power-limit=%r after request for %sW",
+                mode_name,
+                current_power_limit,
+                max_power,
+            )
+        state.calibration_complete = True
+        state.baseline_power_w = current_power
+        state.last_power_percent = 100
+        logger.info(
+            "%s captured baseline power %.1fW from %s as 100%%",
+            mode_name,
+            current_power,
+            current_power_key or "unknown",
+        )
+
+    measurement = _resolve_fixed_supply_temp_measurement(
+        settings_data=settings_data,
+        control_inputs=control_inputs,
+        correction=correction,
+        logger=logger,
+    )
+    if measurement is None:
+        logger.info(
+            "%s waiting for fresh supply_temp measurement; keeping power_percent at %r%%",
+            mode_name,
+            state.last_power_percent,
+        )
+        return None
+    measured_supply_temp = measurement.corrected_value_c
+    reported_power_percent = estimate_power_percent(current_power, state.baseline_power_w)
+
+    if forced_power_percent is not None:
+        if reported_power_percent is not None and abs(reported_power_percent - forced_power_percent) <= 2:
+            logger.info(
+                "%s keeping power_percent at %s%% while override is active (reported=%s%% reason=%s raw=%.2fC corrected=%.2fC target=%.2fC source=%r)",
+                mode_name,
+                forced_power_percent,
+                reported_power_percent,
+                forced_power_reason,
+                measurement.raw_value_c,
+                measured_supply_temp,
+                target_supply_temp,
+                measurement.source,
+            )
+            return None
+        logger.info(
+            "%s forcing power_percent=%s%% (reason=%s raw=%.2fC corrected=%.2fC target=%.2fC source=%r)",
+            mode_name,
+            forced_power_percent,
+            forced_power_reason,
+            measurement.raw_value_c,
+            measured_supply_temp,
+            target_supply_temp,
+            measurement.source,
+        )
+        response = miner.set_power_percent(forced_power_percent)
+        logger.debug("%s forced set_power_percent response: %r", mode_name, response)
+        if response_has_error(response):
+            logger.error(
+                "%s failed to force power_percent to %s%% (reason=%s raw=%.2fC corrected=%.2fC target=%.2fC source=%r): response=%r",
+                mode_name,
+                forced_power_percent,
+                forced_power_reason,
+                measurement.raw_value_c,
+                measured_supply_temp,
+                target_supply_temp,
+                measurement.source,
+                response,
+            )
+            return response
+        state.last_power_percent = forced_power_percent
+        return response
+
+    error_c = target_supply_temp - measured_supply_temp
+    if abs(error_c) <= tolerance_c:
+        logger.info(
+            "%s holding power_percent at %r%% within tolerance (raw=%.2fC corrected=%.2fC target=%.2fC error=%.2fC tolerance=%.2fC source=%r)",
+            mode_name,
+            state.last_power_percent,
+            measurement.raw_value_c,
+            measured_supply_temp,
+            target_supply_temp,
+            error_c,
+            tolerance_c,
+            measurement.source,
+        )
+        return None
+
+    if error_c > tolerance_c:
+        effective_error_c = error_c - tolerance_c
+    else:
+        effective_error_c = error_c + tolerance_c
+
+    baseline_power_w = state.baseline_power_w or 0.0
+    min_percent = 0
+    if baseline_power_w > 0 and min_power is not None and min_power > 0:
+        min_percent = min(100, max(0, int(math.ceil((min_power / baseline_power_w) * 100))))
+
+    current_reference_percent = (
+        reported_power_percent
+        if reported_power_percent is not None
+        else (state.last_power_percent if state.last_power_percent is not None else 100)
+    )
+    desired_percent = int(
+        round(
+            max(
+                min_percent,
+                min(
+                    100.0,
+                    current_reference_percent + (effective_error_c * FIXED_SUPPLY_TEMP_PERCENT_PER_C),
+                ),
+            )
+        )
+    )
+    logger.debug(
+        "%s control decision: raw=%.2fC corrected=%.2fC target=%.2fC error=%.2fC effective_error=%.2fC tolerance=%.2fC baseline_power_w=%.1f min_power=%r min_percent=%s reference_percent=%s desired_percent=%s reported_percent=%r last_percent=%r source=%r",
+        mode_name,
+        measurement.raw_value_c,
+        measured_supply_temp,
+        target_supply_temp,
+        error_c,
+        effective_error_c,
+        tolerance_c,
+        baseline_power_w,
+        min_power,
+        min_percent,
+        current_reference_percent,
+        desired_percent,
+        reported_power_percent,
+        state.last_power_percent,
+        measurement.source,
+    )
+    if reported_power_percent is not None and abs(reported_power_percent - desired_percent) <= 2:
+        logger.info(
+            "%s keeping power_percent at %s%% (reported=%s%% raw=%.2fC corrected=%.2fC target=%.2fC error=%.2fC source=%r)",
+            mode_name,
+            desired_percent,
+            reported_power_percent,
+            measurement.raw_value_c,
+            measured_supply_temp,
+            target_supply_temp,
+            error_c,
+            measurement.source,
+        )
+        return None
+
+    if reported_power_percent is None:
+        logger.debug(
+            "%s retrying power_percent=%s%% because reported percent is unavailable (last_requested=%r%%)",
+            mode_name,
+            desired_percent,
+            state.last_power_percent,
+        )
+    else:
+        logger.debug(
+            "%s retrying power_percent=%s%% because reported percent is %s%% (last_requested=%r%%)",
+            mode_name,
+            desired_percent,
+            reported_power_percent,
+            state.last_power_percent,
+        )
+
+    logger.debug(
+        "%s attempting power_percent update from requested=%s%% reported=%s%% to desired=%s%% (raw=%.2fC corrected=%.2fC target=%.2fC error=%.2fC source=%r)",
+        mode_name,
+        state.last_power_percent,
+        reported_power_percent,
+        desired_percent,
+        measurement.raw_value_c,
+        measured_supply_temp,
+        target_supply_temp,
+        error_c,
+        measurement.source,
+    )
+    response = miner.set_power_percent(desired_percent)
+    logger.debug("%s set_power_percent response: %r", mode_name, response)
+    if response_has_error(response):
+        logger.error(
+            "%s failed to set power_percent to %s%% (reported=%s%% raw=%.2fC corrected=%.2fC target=%.2fC error=%.2fC source=%r): response=%r",
+            mode_name,
+            desired_percent,
+            reported_power_percent,
+            measurement.raw_value_c,
+            measured_supply_temp,
+            target_supply_temp,
+            error_c,
+            measurement.source,
+            response,
+        )
+        return response
+    state.last_power_percent = desired_percent
+    logger.info(
+        "%s applied power_percent=%s%% (reported_before=%s%% raw=%.2fC corrected=%.2fC target=%.2fC error=%.2fC source=%r)",
+        mode_name,
+        desired_percent,
+        reported_power_percent,
+        measurement.raw_value_c,
+        measured_supply_temp,
+        target_supply_temp,
+        error_c,
+        measurement.source,
+    )
+    return response
+
+
 def apply_fixed_supply_temp_heating_mode(
     miner: Any,
     settings_data: dict[str, Any],
@@ -352,287 +819,110 @@ def apply_fixed_supply_temp_heating_mode(
     tolerance_c = safe_float(params.get("tolerance_c"))
     tolerance_c = max(0.0, tolerance_c if tolerance_c is not None else 1.0)
     correction = safe_float(params.get("correction")) or 0.0
-
-    device = get_primary_whatsminer_device_config(settings_data)
-    if device is None:
-        logger.warning("Fixed supply temp mode skipped: no valid whatsminer device configured")
-        return None
-    max_power = safe_int(device.get("max_power"))
-    if max_power is None or max_power <= 0:
-        logger.warning("Fixed supply temp mode skipped: whatsminer max_power is missing or invalid")
-        return None
-    min_power = safe_float(device.get("min_power"))
-    if min_power is not None and min_power < 0:
-        min_power = None
-
-    state = runtime_state or _FIXED_SUPPLY_TEMP_RUNTIME_STATE
-    signature = _build_fixed_supply_temp_signature(device, default_port=default_port)
-    if state.signature != signature:
-        logger.info("Fixed supply temp mode resetting runtime state for device %s", device.get("device_id"))
-        state.reset(signature)
-
-    status = miner.fetch_status()
-    logger.debug("Fixed supply temp mode raw miner status: %r", status)
-    summary = extract_whatsminer_summary(status)
-    if summary is None:
-        logger.warning(
-            "Fixed supply temp mode skipped: unable to extract Whatsminer summary from status response"
-        )
-        return None
-
-    current_power_limit = safe_int(summary.get("power-limit"))
-    up_freq_finish = safe_int(summary.get("up-freq-finish"))
-    current_power, current_power_key = extract_whatsminer_current_power(summary)
-    bootup_time = safe_int(summary.get("bootup-time"))
-
-    if not state.startup_recalibration_decided:
-        state.startup_recalibration_needed = miner_started_before_app(
-            status,
-            summary,
-            app_started_at_unix=app_started_at_unix,
-        )
-        state.startup_recalibration_decided = True
-        logger.debug(
-            "Fixed supply temp startup recalibration decision: needed=%r bootup_time=%r app_started_at=%s sample_when=%r",
-            state.startup_recalibration_needed,
-            bootup_time,
-            app_started_at_unix,
-            status.get("when") if isinstance(status, dict) else None,
-        )
-
-    if not state.calibration_complete and state.startup_recalibration_needed:
-        if not state.startup_full_power_requested:
-            if up_freq_finish != 1:
-                logger.debug(
-                    "Fixed supply temp mode waiting for existing miner ramp to complete before startup recalibration request: up-freq-finish=%r",
-                    up_freq_finish,
-                )
-                return None
-            logger.info(
-                "Fixed supply temp mode detected miner older than app start; forcing power_percent=100 before baseline capture"
-            )
-            response = miner.set_power_percent(100)
-            logger.debug("Fixed supply temp mode startup set_power_percent response: %r", response)
-            if response_has_error(response):
-                logger.error(
-                    "Fixed supply temp mode failed to force power_percent=100 for startup recalibration: response=%r",
-                    response,
-                )
-                return response
-            state.startup_full_power_requested = True
-            state.calibration_requested = True
-            state.baseline_power_w = None
-            state.last_power_percent = 100
-            return response
-        if up_freq_finish != 1:
-            logger.debug(
-                "Fixed supply temp mode waiting for startup recalibration ramp to complete: up-freq-finish=%r",
-                up_freq_finish,
-            )
-            return None
-        if current_power is None or current_power <= 0:
-            logger.warning(
-                "Fixed supply temp mode skipped: no valid current power while waiting for startup recalibration baseline"
-            )
-            return None
-        state.calibration_complete = True
-        state.baseline_power_w = current_power
-        state.last_power_percent = 100
-        logger.info(
-            "Fixed supply temp mode captured startup baseline power %.1fW from %s as 100%%",
-            current_power,
-            current_power_key or "unknown",
-        )
-
-    if not state.calibration_complete and current_power_limit != max_power and not state.calibration_requested:
-        logger.info(
-            "Fixed supply temp mode setting miner power limit to calibration max %sW (current=%r)",
-            max_power,
-            current_power_limit,
-        )
-        response = miner.set_power_limit(max_power)
-        logger.debug("Fixed supply temp mode set_power_limit response: %r", response)
-        if response_has_error(response):
-            logger.error(
-                "Fixed supply temp mode failed to set calibration power limit to %sW: response=%r",
-                max_power,
-                response,
-            )
-            return response
-        state.calibration_requested = True
-        state.calibration_complete = False
-        state.baseline_power_w = None
-        state.last_power_percent = None
-        return response
-
-    if not state.calibration_complete and up_freq_finish != 1:
-        logger.debug(
-            "Fixed supply temp mode waiting for frequency ramp to complete: up-freq-finish=%r",
-            up_freq_finish,
-        )
-        return None
-
-    if not state.calibration_complete:
-        if current_power is None or current_power <= 0:
-            available_power_fields = {
-                key: summary.get(key)
-                for key in ("power", "power-realtime", "power-5min", "power-limit")
-                if key in summary
-            }
-            logger.warning(
-                "Fixed supply temp mode skipped: summary does not contain a valid current power for calibration; available_power_fields=%r",
-                available_power_fields,
-            )
-            return None
-        if current_power_limit != max_power and state.calibration_requested:
-            logger.info(
-                "Fixed supply temp mode proceeding with calibration at reported power-limit=%r after request for %sW",
-                current_power_limit,
-                max_power,
-            )
-        state.calibration_complete = True
-        state.baseline_power_w = current_power
-        state.last_power_percent = 100
-        logger.info(
-            "Fixed supply temp mode captured baseline power %.1fW from %s as 100%%",
-            current_power,
-            current_power_key or "unknown",
-        )
-
-    measurement = _resolve_fixed_supply_temp_measurement(
-        settings_data=settings_data,
-        control_inputs=control_inputs,
+    return _apply_supply_temp_heating_mode(
+        miner,
+        settings_data,
+        control_inputs,
+        target_supply_temp=target_supply_temp,
+        tolerance_c=tolerance_c,
         correction=correction,
         logger=logger,
+        app_started_at_unix=app_started_at_unix,
+        default_port=default_port,
+        mode_name="Fixed supply temp mode",
+        runtime_state=runtime_state,
     )
-    if measurement is None:
-        logger.info(
-            "Fixed supply temp mode waiting for fresh supply_temp measurement; keeping power_percent at %r%%",
-            state.last_power_percent,
+
+
+def apply_room_target_heating_mode(
+    miner: Any,
+    settings_data: dict[str, Any],
+    control_inputs: dict[str, Any] | None,
+    *,
+    logger: logging.Logger,
+    app_started_at_unix: int,
+    default_port: int,
+    runtime_state: FixedSupplyTempRuntimeState | None = None,
+) -> dict[str, Any] | None:
+    if not isinstance(settings_data, dict):
+        logger.debug("Room target mode skipped: settings payload is not a mapping")
+        return None
+    heating_mode = settings_data.get("heating_mode")
+    if not isinstance(heating_mode, dict):
+        logger.debug("Room target mode skipped: heating_mode section is missing or invalid")
+        return None
+    if heating_mode.get("enabled", True) is False:
+        logger.debug("Room target mode skipped: heating_mode is disabled")
+        return None
+    if heating_mode.get("type") != "room_target":
+        logger.debug(
+            "Room target mode skipped: active heating_mode type is %r",
+            heating_mode.get("type"),
         )
         return None
-    measured_supply_temp = measurement.corrected_value_c
 
-    error_c = target_supply_temp - measured_supply_temp
-    if abs(error_c) <= tolerance_c:
-        logger.info(
-            "Fixed supply temp mode holding power_percent at %r%% within tolerance (raw=%.2fC corrected=%.2fC target=%.2fC error=%.2fC tolerance=%.2fC source=%r)",
-            state.last_power_percent,
-            measurement.raw_value_c,
-            measured_supply_temp,
-            target_supply_temp,
-            error_c,
-            tolerance_c,
-            measurement.source,
-        )
+    target_room_temp_c = resolve_room_target_temp_c(heating_mode)
+    if target_room_temp_c is None:
+        logger.warning("Room target mode skipped: target_room_temp_c is missing or invalid")
+        return None
+    if not isinstance(control_inputs, dict):
+        logger.debug("Room target mode skipped: latest control inputs unavailable")
         return None
 
-    if error_c > tolerance_c:
-        effective_error_c = error_c - tolerance_c
-    else:
-        effective_error_c = error_c + tolerance_c
+    outdoor_temp_c = safe_float(control_inputs.get("outdoor_temp"))
+    if outdoor_temp_c is None:
+        logger.info("Room target mode waiting for fresh outdoor_temp measurement")
+        return None
 
-    baseline_power_w = state.baseline_power_w or 0.0
-    reported_power_percent = estimate_power_percent(current_power, state.baseline_power_w)
-    min_percent = 0
-    if baseline_power_w > 0 and min_power is not None and min_power > 0:
-        min_percent = min(100, max(0, int(math.ceil((min_power / baseline_power_w) * 100))))
+    params = heating_mode.get("params")
+    tolerance_c = safe_float(params.get("tolerance_c")) if isinstance(params, dict) else None
+    correction = safe_float(params.get("correction")) if isinstance(params, dict) else None
+    tolerance_c = max(0.0, tolerance_c if tolerance_c is not None else ROOM_TARGET_SUPPLY_TEMP_TOLERANCE_C)
+    correction = correction or 0.0
 
-    current_reference_percent = (
-        reported_power_percent
-        if reported_power_percent is not None
-        else (state.last_power_percent if state.last_power_percent is not None else 100)
+    heating_curve = resolve_heating_curve(settings_data)
+    target_supply_temp_c = compute_heating_curve_target_supply_temp(
+        target_room_temp_c=target_room_temp_c,
+        outdoor_temp_c=outdoor_temp_c,
+        heating_curve=heating_curve,
     )
-    desired_percent = int(
-        round(
-            max(
-                min_percent,
-                min(
-                    100.0,
-                    current_reference_percent + (effective_error_c * FIXED_SUPPLY_TEMP_PERCENT_PER_C),
-                ),
+
+    forced_power_percent: int | None = None
+    forced_power_reason: str | None = None
+    indoor_temp_c = safe_float(control_inputs.get("indoor_temp"))
+    if heating_curve["force_max_power_below_target"] and indoor_temp_c is not None:
+        room_gap_c = target_room_temp_c - indoor_temp_c
+        if room_gap_c > heating_curve["force_max_power_margin_c"]:
+            forced_power_percent = 100
+            forced_power_reason = (
+                "indoor temperature is "
+                f"{room_gap_c:.2f}C below target (indoor={indoor_temp_c:.2f}C "
+                f"target={target_room_temp_c:.2f}C margin={heating_curve['force_max_power_margin_c']:.2f}C)"
             )
-        )
-    )
-    logger.debug(
-        "Fixed supply temp control decision: raw=%.2fC corrected=%.2fC target=%.2fC error=%.2fC effective_error=%.2fC tolerance=%.2fC baseline_power_w=%.1f min_power=%r min_percent=%s reference_percent=%s desired_percent=%s reported_percent=%r last_percent=%r source=%r",
-        measurement.raw_value_c,
-        measured_supply_temp,
-        target_supply_temp,
-        error_c,
-        effective_error_c,
-        tolerance_c,
-        baseline_power_w,
-        min_power,
-        min_percent,
-        current_reference_percent,
-        desired_percent,
-        reported_power_percent,
-        state.last_power_percent,
-        measurement.source,
-    )
-    if reported_power_percent is not None and abs(reported_power_percent - desired_percent) <= 2:
-        logger.info(
-            "Fixed supply temp mode keeping power_percent at %s%% (reported=%s%% raw=%.2fC corrected=%.2fC target=%.2fC error=%.2fC source=%r)",
-            desired_percent,
-            reported_power_percent,
-            measurement.raw_value_c,
-            measured_supply_temp,
-            target_supply_temp,
-            error_c,
-            measurement.source,
-        )
-        return None
-
-    if reported_power_percent is None:
-        logger.debug(
-            "Fixed supply temp mode retrying power_percent=%s%% because reported percent is unavailable (last_requested=%r%%)",
-            desired_percent,
-            state.last_power_percent,
-        )
-    else:
-        logger.debug(
-            "Fixed supply temp mode retrying power_percent=%s%% because reported percent is %s%% (last_requested=%r%%)",
-            desired_percent,
-            reported_power_percent,
-            state.last_power_percent,
-        )
 
     logger.debug(
-        "Fixed supply temp mode attempting power_percent update from requested=%s%% reported=%s%% to desired=%s%% (raw=%.2fC corrected=%.2fC target=%.2fC error=%.2fC source=%r)",
-        state.last_power_percent,
-        reported_power_percent,
-        desired_percent,
-        measurement.raw_value_c,
-        measured_supply_temp,
-        target_supply_temp,
-        error_c,
-        measurement.source,
+        "Room target mode computed supply target %.2fC from target_room_temp=%.2fC outdoor_temp=%.2fC slope=%.3f exponent=%.3f offset=%.3f forced_power=%r",
+        target_supply_temp_c,
+        target_room_temp_c,
+        outdoor_temp_c,
+        heating_curve["slope"],
+        heating_curve["exponent"],
+        heating_curve["offset"],
+        forced_power_percent,
     )
-    response = miner.set_power_percent(desired_percent)
-    logger.debug("Fixed supply temp mode set_power_percent response: %r", response)
-    if response_has_error(response):
-        logger.error(
-            "Fixed supply temp mode failed to set power_percent to %s%% (reported=%s%% raw=%.2fC corrected=%.2fC target=%.2fC error=%.2fC source=%r): response=%r",
-            desired_percent,
-            reported_power_percent,
-            measurement.raw_value_c,
-            measured_supply_temp,
-            target_supply_temp,
-            error_c,
-            measurement.source,
-            response,
-        )
-        return response
-    state.last_power_percent = desired_percent
-    logger.info(
-        "Fixed supply temp mode applied power_percent=%s%% (reported_before=%s%% raw=%.2fC corrected=%.2fC target=%.2fC error=%.2fC source=%r)",
-        desired_percent,
-        reported_power_percent,
-        measurement.raw_value_c,
-        measured_supply_temp,
-        target_supply_temp,
-        error_c,
-        measurement.source,
+
+    return _apply_supply_temp_heating_mode(
+        miner,
+        settings_data,
+        control_inputs,
+        target_supply_temp=target_supply_temp_c,
+        tolerance_c=tolerance_c,
+        correction=correction,
+        logger=logger,
+        app_started_at_unix=app_started_at_unix,
+        default_port=default_port,
+        mode_name="Room target mode",
+        runtime_state=runtime_state,
+        forced_power_percent=forced_power_percent,
+        forced_power_reason=forced_power_reason,
     )
-    return response

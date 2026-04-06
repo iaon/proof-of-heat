@@ -9,6 +9,7 @@ from proof_of_heat.app_builder import AppBuilderDependencies, create_app as buil
 from proof_of_heat.heating_modes import (
     FixedSupplyTempRuntimeState,
     apply_fixed_power_heating_mode,
+    apply_room_target_heating_mode,
     apply_fixed_supply_temp_heating_mode,
     build_whatsminer_kwargs_from_settings,
     clear_fixed_supply_temp_runtime_state,
@@ -131,6 +132,23 @@ def _apply_fixed_supply_temp_heating_mode(
     )
 
 
+def _apply_room_target_heating_mode(
+    miner: Any,
+    settings_data: dict[str, Any],
+    control_inputs: dict[str, Any] | None,
+    runtime_state: FixedSupplyTempRuntimeState | None = None,
+) -> dict[str, Any] | None:
+    return apply_room_target_heating_mode(
+        miner,
+        settings_data,
+        control_inputs,
+        logger=logger,
+        app_started_at_unix=_APP_STARTED_AT_UNIX,
+        default_port=config_defaults_port(),
+        runtime_state=runtime_state,
+    )
+
+
 def _clear_fixed_supply_temp_runtime_state() -> None:
     clear_fixed_supply_temp_runtime_state()
 
@@ -142,16 +160,19 @@ def _run_heating_mode_control(device_poller: Any | None = None) -> None:
         heating_mode = settings_data.get("heating_mode") if isinstance(settings_data, dict) else None
         mode_enabled = not isinstance(heating_mode, dict) or heating_mode.get("enabled", True) is not False
         mode_type = heating_mode.get("type") if isinstance(heating_mode, dict) else None
-        if not mode_enabled or mode_type != "fixed_supply_temp":
+        if not mode_enabled or mode_type not in {"fixed_supply_temp", "room_target"}:
             _clear_fixed_supply_temp_runtime_state()
         miner = _build_whatsminer_from_settings(settings_data)
         if miner is None:
             return
-        if mode_enabled and mode_type == "fixed_supply_temp":
+        if mode_enabled and mode_type in {"fixed_supply_temp", "room_target"}:
             control_inputs = None
             if device_poller is not None and hasattr(device_poller, "get_latest_control_inputs"):
                 control_inputs = device_poller.get_latest_control_inputs()
-            _apply_fixed_supply_temp_heating_mode(miner, settings_data, control_inputs)
+            if mode_type == "fixed_supply_temp":
+                _apply_fixed_supply_temp_heating_mode(miner, settings_data, control_inputs)
+            else:
+                _apply_room_target_heating_mode(miner, settings_data, control_inputs)
             return
         _apply_fixed_power_heating_mode(miner, settings_data)
     except Exception:  # pragma: no cover - defensive logging

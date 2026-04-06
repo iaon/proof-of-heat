@@ -1220,6 +1220,140 @@ def test_fixed_supply_temp_mode_skips_when_supply_temp_is_missing():
     assert DummyMiner.set_power_percent_calls == []
 
 
+def test_room_target_mode_computes_supply_target_and_updates_power_percent():
+    DummyMiner.fetch_status_response = {
+        "code": 0,
+        "msg": {
+            "summary": {
+                "power-limit": 3800,
+                "up-freq-finish": 1,
+                "power-realtime": 1500,
+            }
+        },
+    }
+    DummyMiner.set_power_percent_calls = []
+    state = main.FixedSupplyTempRuntimeState(
+        signature=("miner01", "miner.local", 4433, 3800, 1000),
+        calibration_requested=True,
+        calibration_complete=True,
+        baseline_power_w=3000,
+        last_power_percent=50,
+    )
+    miner = DummyMiner()
+
+    result = main._apply_room_target_heating_mode(
+        miner,
+        {
+            "devices": {
+                "whatsminer": [
+                    {
+                        "device_id": "miner01",
+                        "host": "miner.local",
+                        "max_power": 3800,
+                        "min_power": 1000,
+                    }
+                ]
+            },
+            "control_inputs": {"max_age_seconds": 180},
+            "heating_mode": {
+                "enabled": True,
+                "type": "room_target",
+                "params": {
+                    "target_room_temp_c": 20.0,
+                },
+            },
+            "heating_curve": {
+                "slope": 2.0,
+                "exponent": 1.0,
+                "offset": 0.0,
+                "force_max_power_below_target": False,
+                "force_max_power_margin_c": 5.0,
+                "min_supply_temp_c": 25.0,
+                "max_supply_temp_c": 60.0,
+            },
+        },
+        {
+            "ts": int(main.datetime.now(main.timezone.utc).timestamp() * 1000),
+            "indoor_temp": 19.8,
+            "outdoor_temp": 10.0,
+            "supply_temp": 38.0,
+            "supply_temp_source": "zont:12000:supply",
+        },
+        runtime_state=state,
+    )
+
+    assert result == {"power_percent": 65}
+    assert DummyMiner.set_power_percent_calls == [65]
+    assert state.last_power_percent == 65
+
+
+def test_room_target_mode_forces_full_power_when_room_is_far_below_target():
+    DummyMiner.fetch_status_response = {
+        "code": 0,
+        "msg": {
+            "summary": {
+                "power-limit": 3800,
+                "up-freq-finish": 1,
+                "power-realtime": 1500,
+            }
+        },
+    }
+    DummyMiner.set_power_percent_calls = []
+    state = main.FixedSupplyTempRuntimeState(
+        signature=("miner01", "miner.local", 4433, 3800, 1000),
+        calibration_requested=True,
+        calibration_complete=True,
+        baseline_power_w=3000,
+        last_power_percent=50,
+    )
+    miner = DummyMiner()
+
+    result = main._apply_room_target_heating_mode(
+        miner,
+        {
+            "devices": {
+                "whatsminer": [
+                    {
+                        "device_id": "miner01",
+                        "host": "miner.local",
+                        "max_power": 3800,
+                        "min_power": 1000,
+                    }
+                ]
+            },
+            "control_inputs": {"max_age_seconds": 180},
+            "heating_mode": {
+                "enabled": True,
+                "type": "room_target",
+                "params": {
+                    "target_room_temp_c": 20.0,
+                },
+            },
+            "heating_curve": {
+                "slope": 2.0,
+                "exponent": 1.0,
+                "offset": 0.0,
+                "force_max_power_below_target": True,
+                "force_max_power_margin_c": 5.0,
+                "min_supply_temp_c": 25.0,
+                "max_supply_temp_c": 60.0,
+            },
+        },
+        {
+            "ts": int(main.datetime.now(main.timezone.utc).timestamp() * 1000),
+            "indoor_temp": 13.0,
+            "outdoor_temp": 10.0,
+            "supply_temp": 44.0,
+            "supply_temp_source": "zont:12000:supply",
+        },
+        runtime_state=state,
+    )
+
+    assert result == {"power_percent": 100}
+    assert DummyMiner.set_power_percent_calls == [100]
+    assert state.last_power_percent == 100
+
+
 def test_run_heating_mode_control_uses_first_whatsminer_device_config(monkeypatch):
     settings = {
         "devices": {
@@ -1262,6 +1396,68 @@ def test_run_heating_mode_control_uses_first_whatsminer_device_config(monkeypatc
         "max_power": 3800,
     }
     assert DummyMiner.set_power_limit_calls == [3200]
+
+
+def test_run_heating_mode_control_routes_room_target_with_control_inputs(monkeypatch):
+    settings = {
+        "devices": {
+            "whatsminer": [
+                {
+                    "host": "miner.local",
+                    "port": 4444,
+                    "login": "user",
+                    "password": "secret",
+                    "timeout": 12,
+                    "max_power": 3800,
+                }
+            ]
+        },
+        "heating_mode": {
+            "enabled": True,
+            "type": "room_target",
+            "params": {"target_room_temp_c": 20.0},
+        },
+    }
+    DummyMiner.init_kwargs = []
+    called = []
+    control_inputs = {
+        "ts": 1,
+        "indoor_temp": 19.0,
+        "outdoor_temp": 10.0,
+        "supply_temp": 35.0,
+    }
+
+    monkeypatch.setattr(main, "Whatsminer", DummyMiner, raising=False)
+    monkeypatch.setattr(main, "load_settings_yaml", lambda: "unused", raising=False)
+    monkeypatch.setattr(main, "parse_settings_yaml", lambda raw_yaml: settings, raising=False)
+    monkeypatch.setattr(
+        main,
+        "_apply_room_target_heating_mode",
+        lambda miner, settings_data, latest_control_inputs: called.append(
+            ("room_target", latest_control_inputs)
+        ),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        main,
+        "_apply_fixed_power_heating_mode",
+        lambda miner, settings_data: called.append(("fixed_power", None)),
+        raising=False,
+    )
+
+    main._run_heating_mode_control(
+        SimpleNamespace(get_latest_control_inputs=lambda: control_inputs)
+    )
+
+    assert DummyMiner.init_kwargs[-1] == {
+        "host": "miner.local",
+        "port": 4444,
+        "login": "user",
+        "password": "secret",
+        "timeout": 12,
+        "max_power": 3800,
+    }
+    assert called == [("room_target", control_inputs)]
 
 
 def test_heating_curve_api_reads_and_writes_section(tmp_path, monkeypatch):

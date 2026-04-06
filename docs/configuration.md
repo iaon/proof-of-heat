@@ -254,6 +254,12 @@ Current UI:
 - the preview formula is `slope * (target_room_temp_c - outdoor_temp_c) ^ exponent + offset + target_room_temp_c`, clamped between `min_supply_temp_c` and `max_supply_temp_c`.
 - the chart is drawn only up to `outdoor_temp_c <= target_room_temp_c` so fractional exponents remain defined.
 
+Runtime behavior:
+
+- `room_target` uses the same curve parameters to compute `target_supply_temp_c` from `target_room_temp_c` and `control_inputs.outdoor_temp`.
+- when `outdoor_temp_c > target_room_temp_c`, runtime clamps the temperature delta to `0` before applying the exponent so fractional exponents remain valid.
+- `force_max_power_below_target` and `force_max_power_margin_c` are applied in `room_target`: if the room is colder than the target by more than the configured margin, the miner is forced to `100%` power until the gap closes.
+
 ### `heating_mode`
 
 `heating_mode` defines which high-level heating strategy should be active. Sensor selection is always taken from `control_inputs`, and the project assumes a single global `heating_curve`.
@@ -275,13 +281,16 @@ Supported modes:
   - uses the resolved `control_inputs.supply_temp` value as the sensor input
 - `room_target`
   - required `params.target_room_temp_c`
+  - uses `control_inputs.outdoor_temp` to compute a target supply temperature from `heating_curve`
+  - uses `control_inputs.supply_temp` as the measured supply temperature for the low-level power regulator
+  - optionally uses `control_inputs.indoor_temp` to force `100%` power when the room is far below target
 
 Current status:
 
 - The configuration schema is available now.
-- `fixed_power` and `fixed_supply_temp` have runtime control loops.
+- `fixed_power`, `fixed_supply_temp`, and `room_target` have runtime control loops.
 - `fixed_supply_temp` first sets the miner `power_limit` to device `max_power`, waits for `up-freq-finish`, records the resulting actual miner power as the `100%` baseline, and then regulates output through `set.miner.power_percent`.
-- Existing runtime control routes still use the legacy `mode` and `target_temperature_c` fields.
+- `room_target` computes a supply target from the heating curve and then uses the same calibrated `set.miner.power_percent` loop as `fixed_supply_temp`.
 
 ### `economics`
 
