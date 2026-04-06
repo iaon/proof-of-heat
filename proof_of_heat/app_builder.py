@@ -9,8 +9,6 @@ from html import escape
 from pathlib import Path
 from typing import Any, Callable
 
-import yaml
-
 try:  # pragma: no cover - imported lazily for endpoint typing when FastAPI is available
     from fastapi import Request
 except Exception:  # pragma: no cover - diagnostic fallback path
@@ -70,6 +68,7 @@ class AppBuilderDependencies:
     human_readable_mode: Callable[[str], str]
     load_settings_yaml: Callable[[], str]
     parse_settings_yaml: Callable[[str], dict[str, Any]]
+    render_settings_yaml: Callable[[dict[str, Any]], str]
     save_settings_yaml: Callable[[str], dict[str, Any]]
     run_heating_mode_control: Callable[[Any | None], None]
     resolve_control_interval_seconds: Callable[[dict[str, Any]], int]
@@ -332,7 +331,7 @@ def create_app(
         raw_yaml = deps.load_settings_yaml()
         parsed = deps.parse_settings_yaml(raw_yaml)
         parsed["heating_curve"] = heating_curve
-        rendered_yaml = yaml.safe_dump(parsed, sort_keys=False, allow_unicode=True)
+        rendered_yaml = deps.render_settings_yaml(parsed)
         saved = deps.save_settings_yaml(rendered_yaml)
         device_poller.update_settings(saved)
         return {"data": _normalize_heating_curve(saved.get("heating_curve"))}

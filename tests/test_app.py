@@ -168,6 +168,12 @@ def build_test_app(tmp_path, monkeypatch, parsed_settings=None, latest_payloads=
     monkeypatch.setattr(main, "human_readable_mode", lambda mode: mode.title(), raising=False)
     monkeypatch.setattr(main, "load_settings_yaml", lambda: "devices: {}\n", raising=False)
     monkeypatch.setattr(main, "parse_settings_yaml", lambda raw_yaml: settings, raising=False)
+    monkeypatch.setattr(
+        main,
+        "render_settings_yaml",
+        lambda parsed: yaml.safe_dump(parsed, sort_keys=False, allow_unicode=True),
+        raising=False,
+    )
     monkeypatch.setattr(main, "save_settings_yaml", save_settings, raising=False)
     monkeypatch.setattr(main, "FastAPI", FastAPI, raising=False)
     monkeypatch.setattr(main, "HTMLResponse", HTMLResponse, raising=False)

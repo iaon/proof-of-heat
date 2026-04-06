@@ -6,7 +6,7 @@ from proof_of_heat.config import (
     MinerConfig,
     RoomTargetHeatingParams,
 )
-from proof_of_heat.settings import DEFAULT_SETTINGS_YAML, parse_settings_yaml
+from proof_of_heat.settings import DEFAULT_SETTINGS_YAML, parse_settings_yaml, render_settings_yaml
 
 
 def test_miner_config_defaults_min_power():
@@ -123,3 +123,41 @@ def test_default_settings_yaml_includes_economics():
             ],
         },
     }
+
+
+def test_parse_settings_yaml_preserves_unquoted_time_of_day_values_as_strings():
+    parsed = parse_settings_yaml(
+        """
+economics:
+  electricity:
+    mode: time_of_day
+    tariffs:
+      - start: 07:00
+        price_per_kwh: 8.0
+      - start: 23:00
+        price_per_kwh: 5.0
+"""
+    )
+
+    tariffs = parsed["economics"]["electricity"]["tariffs"]
+    assert tariffs[0]["start"] == "07:00"
+    assert tariffs[1]["start"] == "23:00"
+
+
+def test_render_settings_yaml_quotes_time_of_day_values():
+    rendered = render_settings_yaml(
+        {
+            "economics": {
+                "electricity": {
+                    "mode": "time_of_day",
+                    "tariffs": [
+                        {"start": "07:00", "price_per_kwh": 8.0},
+                        {"start": "23:00", "price_per_kwh": 5.0},
+                    ],
+                }
+            }
+        }
+    )
+
+    assert "start: '07:00'" in rendered
+    assert "start: '23:00'" in rendered

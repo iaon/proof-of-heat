@@ -59,6 +59,7 @@ try:  # Lazy import to allow a diagnostic ASGI fallback if dependencies are miss
     from proof_of_heat.settings import (
         load_settings_yaml,
         parse_settings_yaml,
+        render_settings_yaml,
         save_settings_yaml,
     )
     from proof_of_heat.services.device_polling import DevicePoller
@@ -71,7 +72,7 @@ except Exception as exc:  # pragma: no cover - defensive import guard
     HTMLResponse = JSONResponse = None  # type: ignore[assignment]
     StaticFiles = None  # type: ignore[assignment]
     DEFAULT_CONFIG = AppConfig = human_readable_mode = Whatsminer = TemperatureController = None  # type: ignore[assignment]
-    load_settings_yaml = parse_settings_yaml = save_settings_yaml = None  # type: ignore[assignment]
+    load_settings_yaml = parse_settings_yaml = render_settings_yaml = save_settings_yaml = None  # type: ignore[assignment]
     DevicePoller = None  # type: ignore[assignment]
     _startup_error = exc
 
@@ -172,6 +173,7 @@ def create_app(config: AppConfig = DEFAULT_CONFIG) -> FastAPI:
         human_readable_mode=human_readable_mode,
         load_settings_yaml=load_settings_yaml,
         parse_settings_yaml=parse_settings_yaml,
+        render_settings_yaml=render_settings_yaml,
         save_settings_yaml=save_settings_yaml,
         run_heating_mode_control=_run_heating_mode_control,
         resolve_control_interval_seconds=resolve_control_interval_seconds,
