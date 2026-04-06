@@ -248,8 +248,9 @@ Supported fields:
 Current UI:
 
 - `/heating-curve` provides a dedicated editor with number inputs and a graph preview.
-- the preview assumes a 20°C indoor setpoint and plots supply temperature against outdoor temperature.
-- the preview formula is `20 + slope * (20 - outdoor_temp_c) ^ exponent`, clamped between `min_supply_temp_c` and `max_supply_temp_c`.
+- the preview reads `target_room_temp_c` from `heating_mode.params` when available.
+- the preview formula is `slope * (target_room_temp_c - outdoor_temp_c) ^ exponent + outdoor_temp_c + target_room_temp_c`, clamped between `min_supply_temp_c` and `max_supply_temp_c`.
+- the chart is drawn only up to `outdoor_temp_c <= target_room_temp_c` so fractional exponents remain defined.
 
 ### `heating_mode`
 

@@ -275,6 +275,14 @@ def test_ui_respects_root_path(tmp_path, monkeypatch):
     assert 'data-hours="24"' in economics_markup
     assert 'Version 1.2.3-testsha' in economics_markup
 
+    heating_curve_resp = routes["/heating-curve"](make_request("/heating-curve", root_path="/app"))
+    assert heating_curve_resp.status_code == 200
+    heating_curve_markup = heating_curve_resp.body.decode()
+    assert 'const rootPath = "/app";' in heating_curve_markup
+    assert 'Ft = S * (Tt - Ct)^exponent + Ct + Tt' in heating_curve_markup
+    assert 'id="target-room-temp-c"' in heating_curve_markup
+    assert 'Version 1.2.3-testsha' in heating_curve_markup
+
 
 def test_status_snapshot(tmp_path, monkeypatch):
     routes = build_routes(tmp_path, monkeypatch)

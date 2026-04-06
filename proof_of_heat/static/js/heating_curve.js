@@ -1,6 +1,7 @@
 const apiUrl = (path) => `${rootPath}${path}`;
 const slopeEl = document.getElementById("slope");
 const exponentEl = document.getElementById("exponent");
+const targetRoomTempCEl = document.getElementById("target-room-temp-c");
 const forceMaxPowerBelowTargetEl = document.getElementById("force-max-power-below-target");
 const forceMaxPowerMarginCEl = document.getElementById("force-max-power-margin-c");
 const minSupplyTempCEl = document.getElementById("min-supply-temp-c");
@@ -9,6 +10,7 @@ const previewEl = document.getElementById("heating-curve-preview");
 const chartCtx = document.getElementById("heating-curve-chart").getContext("2d");
 
 let chart;
+let targetRoomTempC = 22.0;
 
 function getFormData() {
     const slope = Number(slopeEl.value);
@@ -37,22 +39,51 @@ function applyFormData(data) {
 }
 
 function computeCurvePoint(outdoorTempC, data) {
-    const delta = Math.max(0, 20 - outdoorTempC);
-    const unclamped = 20 + data.slope * (delta ** data.exponent);
+    const delta = targetRoomTempC - outdoorTempC;
+    if (delta < 0) {
+        return null;
+    }
+    const unclamped = (data.slope * (delta ** data.exponent)) + outdoorTempC + targetRoomTempC;
     return Math.min(data.max_supply_temp_c, Math.max(data.min_supply_temp_c, unclamped));
+}
+
+function resolveTargetRoomTempC(parsedConfig) {
+    if (!parsedConfig || typeof parsedConfig !== "object") {
+        return 22.0;
+    }
+    const heatingMode = parsedConfig.heating_mode;
+    if (!heatingMode || typeof heatingMode !== "object") {
+        return 22.0;
+    }
+    const params = heatingMode.params;
+    if (!params || typeof params !== "object") {
+        return 22.0;
+    }
+    const value = Number(params.target_room_temp_c);
+    return Number.isFinite(value) ? value : 22.0;
 }
 
 function renderPreview() {
     const data = getFormData();
-    previewEl.textContent = JSON.stringify(data, null, 2);
+    targetRoomTempCEl.value = String(targetRoomTempC);
+    previewEl.textContent = JSON.stringify({
+        target_room_temp_c: targetRoomTempC,
+        formula: "Ft = S * (Tt - Ct)^exponent + Ct + Tt",
+        heating_curve: data,
+    }, null, 2);
 
     const points = [];
     const minSupplyPoints = [];
     const maxSupplyPoints = [];
-    for (let outdoorTempC = -30; outdoorTempC <= 20; outdoorTempC += 1) {
+    const maxOutdoorTempC = Math.floor(targetRoomTempC);
+    for (let outdoorTempC = -30; outdoorTempC <= maxOutdoorTempC; outdoorTempC += 1) {
+        const supplyTempC = computeCurvePoint(outdoorTempC, data);
+        if (supplyTempC === null) {
+            continue;
+        }
         points.push({
             x: outdoorTempC,
-            y: computeCurvePoint(outdoorTempC, data),
+            y: supplyTempC,
         });
         minSupplyPoints.push({
             x: outdoorTempC,
@@ -105,6 +136,8 @@ function renderPreview() {
                 x: {
                     type: "linear",
                     reverse: true,
+                    max: maxOutdoorTempC,
+                    min: -30,
                     title: { display: true, text: "Outdoor temperature °C" },
                 },
                 y: {
@@ -117,9 +150,18 @@ function renderPreview() {
 
 async function loadHeatingCurve() {
     previewEl.textContent = "Loading...";
-    const res = await fetch(apiUrl("/api/heating-curve"));
-    const payload = await res.json();
-    applyFormData(payload.data || {});
+    const [curveRes, configRes] = await Promise.all([
+        fetch(apiUrl("/api/heating-curve")),
+        fetch(apiUrl("/api/config")),
+    ]);
+    const curvePayload = await curveRes.json();
+    const configPayload = await configRes.json();
+    if (!curveRes.ok) {
+        previewEl.textContent = "Error: " + (curvePayload.detail || "Failed to load");
+        return;
+    }
+    targetRoomTempC = resolveTargetRoomTempC(configPayload.parsed || {});
+    applyFormData(curvePayload.data || {});
 }
 
 async function saveHeatingCurve() {
