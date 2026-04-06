@@ -31,6 +31,9 @@ from proof_of_heat.services.weather import fetch_met_no_weather, fetch_open_mete
 ensure_trace_level()
 logger = logging.getLogger("proof_of_heat.device_polling")
 
+CONTROL_DEVICE_TYPE = "control"
+CONTROL_DEVICE_ID = "main"
+
 @dataclass(frozen=True)
 class DeviceKey:
     device_type: str
@@ -313,6 +316,153 @@ class DevicePoller:
             "power": row[7],
             "power_sources": power_sources,
         }
+
+    def get_latest_control_decision(self) -> dict[str, Any] | None:
+        if not self._db_path:
+            return None
+        with self._db_lock:
+            with sqlite3.connect(self._db_path) as conn:
+                self._ensure_schema(conn)
+                row = conn.execute(
+                    """
+                    SELECT
+                        ts,
+                        mode,
+                        resolved_target_room_temp_c,
+                        resolved_target_supply_temp_c,
+                        requested_power_percent,
+                        requested_power_w,
+                        override_reason
+                    FROM control_decisions
+                    ORDER BY ts DESC, id DESC
+                    LIMIT 1
+                    """
+                ).fetchone()
+        if row is None:
+            return None
+        return {
+            "ts": int(row[0]),
+            "mode": row[1],
+            "resolved_target_room_temp_c": row[2],
+            "resolved_target_supply_temp_c": row[3],
+            "requested_power_percent": row[4],
+            "requested_power_w": row[5],
+            "override_reason": row[6],
+        }
+
+    def record_control_decision(self, decision: dict[str, Any] | None) -> None:
+        if not self._db_path or not isinstance(decision, dict):
+            return
+        ts_ms = self._safe_int(decision.get("ts"))
+        if ts_ms is None or ts_ms < 0:
+            ts_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+
+        row = {
+            "ts": ts_ms,
+            "mode": str(decision.get("mode")) if decision.get("mode") is not None else None,
+            "resolved_target_room_temp_c": self._safe_float(decision.get("resolved_target_room_temp_c")),
+            "resolved_target_supply_temp_c": self._safe_float(decision.get("resolved_target_supply_temp_c")),
+            "requested_power_percent": self._safe_float(decision.get("requested_power_percent")),
+            "requested_power_w": self._safe_float(decision.get("requested_power_w")),
+            "override_reason": (
+                str(decision.get("override_reason"))
+                if decision.get("override_reason") is not None
+                else None
+            ),
+        }
+
+        metric_rows = []
+        if row["resolved_target_room_temp_c"] is not None:
+            metric_rows.append(
+                {
+                    "ts": ts_ms,
+                    "device_type": CONTROL_DEVICE_TYPE,
+                    "device_id": CONTROL_DEVICE_ID,
+                    "metric": "resolved_target_room_temp_c",
+                    "value": row["resolved_target_room_temp_c"],
+                    "unit": "celsius",
+                }
+            )
+        if row["resolved_target_supply_temp_c"] is not None:
+            metric_rows.append(
+                {
+                    "ts": ts_ms,
+                    "device_type": CONTROL_DEVICE_TYPE,
+                    "device_id": CONTROL_DEVICE_ID,
+                    "metric": "resolved_target_supply_temp_c",
+                    "value": row["resolved_target_supply_temp_c"],
+                    "unit": "celsius",
+                }
+            )
+        if row["requested_power_percent"] is not None:
+            metric_rows.append(
+                {
+                    "ts": ts_ms,
+                    "device_type": CONTROL_DEVICE_TYPE,
+                    "device_id": CONTROL_DEVICE_ID,
+                    "metric": "requested_power_percent",
+                    "value": row["requested_power_percent"],
+                    "unit": "%",
+                }
+            )
+        if row["requested_power_w"] is not None:
+            metric_rows.append(
+                {
+                    "ts": ts_ms,
+                    "device_type": CONTROL_DEVICE_TYPE,
+                    "device_id": CONTROL_DEVICE_ID,
+                    "metric": "requested_power_w",
+                    "value": row["requested_power_w"],
+                    "unit": "w",
+                }
+            )
+
+        with self._db_lock:
+            with sqlite3.connect(self._db_path) as conn:
+                self._ensure_schema(conn)
+                conn.execute(
+                    """
+                    INSERT INTO control_decisions (
+                        ts,
+                        mode,
+                        resolved_target_room_temp_c,
+                        resolved_target_supply_temp_c,
+                        requested_power_percent,
+                        requested_power_w,
+                        override_reason
+                    ) VALUES (
+                        :ts,
+                        :mode,
+                        :resolved_target_room_temp_c,
+                        :resolved_target_supply_temp_c,
+                        :requested_power_percent,
+                        :requested_power_w,
+                        :override_reason
+                    )
+                    """,
+                    row,
+                )
+                if metric_rows:
+                    conn.executemany(
+                        """
+                        INSERT INTO metrics (
+                            ts,
+                            device_type,
+                            device_id,
+                            metric,
+                            value,
+                            unit
+                        ) VALUES (
+                            :ts,
+                            :device_type,
+                            :device_id,
+                            :metric,
+                            :value,
+                            :unit
+                        )
+                        """,
+                        metric_rows,
+                    )
 
     def _poll_device(
         self,
@@ -1026,6 +1176,26 @@ class DevicePoller:
             ON control_inputs (ts)
             """
         )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS control_decisions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ts INTEGER NOT NULL,
+                mode TEXT,
+                resolved_target_room_temp_c REAL,
+                resolved_target_supply_temp_c REAL,
+                requested_power_percent REAL,
+                requested_power_w REAL,
+                override_reason TEXT
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_control_decisions_ts
+            ON control_decisions (ts)
+            """
+        )
         self._ensure_columns(
             conn,
             table_name="control_inputs",
@@ -1039,6 +1209,19 @@ class DevicePoller:
                 "supply_temp_source": "TEXT",
                 "power": "REAL NOT NULL DEFAULT 0",
                 "power_sources": "TEXT",
+            },
+        )
+        self._ensure_columns(
+            conn,
+            table_name="control_decisions",
+            expected_columns={
+                "ts": "INTEGER NOT NULL",
+                "mode": "TEXT",
+                "resolved_target_room_temp_c": "REAL",
+                "resolved_target_supply_temp_c": "REAL",
+                "requested_power_percent": "REAL",
+                "requested_power_w": "REAL",
+                "override_reason": "TEXT",
             },
         )
 

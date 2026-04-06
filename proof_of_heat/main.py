@@ -7,6 +7,7 @@ from typing import Any
 
 from proof_of_heat.app_builder import AppBuilderDependencies, create_app as build_app
 from proof_of_heat.heating_modes import (
+    ControlDecision,
     FixedSupplyTempRuntimeState,
     apply_fixed_power_heating_mode,
     apply_room_target_heating_mode,
@@ -107,11 +108,13 @@ def _build_whatsminer_from_settings(settings_data: dict[str, Any]) -> Any | None
 def _apply_fixed_power_heating_mode(
     miner: Any,
     settings_data: dict[str, Any],
+    decision_state: ControlDecision | None = None,
 ) -> dict[str, Any] | None:
     return apply_fixed_power_heating_mode(
         miner,
         settings_data,
         logger=logger,
+        decision_state=decision_state,
     )
 
 
@@ -120,6 +123,7 @@ def _apply_fixed_supply_temp_heating_mode(
     settings_data: dict[str, Any],
     control_inputs: dict[str, Any] | None,
     runtime_state: FixedSupplyTempRuntimeState | None = None,
+    decision_state: ControlDecision | None = None,
 ) -> dict[str, Any] | None:
     return apply_fixed_supply_temp_heating_mode(
         miner,
@@ -129,6 +133,7 @@ def _apply_fixed_supply_temp_heating_mode(
         app_started_at_unix=_APP_STARTED_AT_UNIX,
         default_port=config_defaults_port(),
         runtime_state=runtime_state,
+        decision_state=decision_state,
     )
 
 
@@ -137,6 +142,7 @@ def _apply_room_target_heating_mode(
     settings_data: dict[str, Any],
     control_inputs: dict[str, Any] | None,
     runtime_state: FixedSupplyTempRuntimeState | None = None,
+    decision_state: ControlDecision | None = None,
 ) -> dict[str, Any] | None:
     return apply_room_target_heating_mode(
         miner,
@@ -146,6 +152,7 @@ def _apply_room_target_heating_mode(
         app_started_at_unix=_APP_STARTED_AT_UNIX,
         default_port=config_defaults_port(),
         runtime_state=runtime_state,
+        decision_state=decision_state,
     )
 
 
@@ -160,6 +167,7 @@ def _run_heating_mode_control(device_poller: Any | None = None) -> None:
         heating_mode = settings_data.get("heating_mode") if isinstance(settings_data, dict) else None
         mode_enabled = not isinstance(heating_mode, dict) or heating_mode.get("enabled", True) is not False
         mode_type = heating_mode.get("type") if isinstance(heating_mode, dict) else None
+        decision_state = ControlDecision()
         if not mode_enabled or mode_type not in {"fixed_supply_temp", "room_target"}:
             _clear_fixed_supply_temp_runtime_state()
         miner = _build_whatsminer_from_settings(settings_data)
@@ -170,11 +178,37 @@ def _run_heating_mode_control(device_poller: Any | None = None) -> None:
             if device_poller is not None and hasattr(device_poller, "get_latest_control_inputs"):
                 control_inputs = device_poller.get_latest_control_inputs()
             if mode_type == "fixed_supply_temp":
-                _apply_fixed_supply_temp_heating_mode(miner, settings_data, control_inputs)
+                _apply_fixed_supply_temp_heating_mode(
+                    miner,
+                    settings_data,
+                    control_inputs,
+                    decision_state=decision_state,
+                )
             else:
-                _apply_room_target_heating_mode(miner, settings_data, control_inputs)
+                _apply_room_target_heating_mode(
+                    miner,
+                    settings_data,
+                    control_inputs,
+                    decision_state=decision_state,
+                )
+            if (
+                device_poller is not None
+                and hasattr(device_poller, "record_control_decision")
+                and decision_state.mode
+            ):
+                device_poller.record_control_decision(decision_state.as_dict())
             return
-        _apply_fixed_power_heating_mode(miner, settings_data)
+        _apply_fixed_power_heating_mode(
+            miner,
+            settings_data,
+            decision_state=decision_state,
+        )
+        if (
+            device_poller is not None
+            and hasattr(device_poller, "record_control_decision")
+            and decision_state.mode
+        ):
+            device_poller.record_control_decision(decision_state.as_dict())
     except Exception:  # pragma: no cover - defensive logging
         logger.exception("Heating mode control iteration failed")
 

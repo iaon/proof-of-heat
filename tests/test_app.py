@@ -63,6 +63,8 @@ class DummyController:
 class DummyDevicePoller:
     latest_payloads = {}
     latest_control_inputs = None
+    latest_control_decision = None
+    recorded_control_decisions = []
     metric_catalog = {}
     economics_metadata = {
         "enabled": True,
@@ -113,6 +115,13 @@ class DummyDevicePoller:
     def get_latest_control_inputs(self):
         return self.latest_control_inputs
 
+    def get_latest_control_decision(self):
+        return self.latest_control_decision
+
+    def record_control_decision(self, decision):
+        self.recorded_control_decisions.append(decision)
+        self.latest_control_decision = decision
+
 
 def build_routes(tmp_path, monkeypatch, parsed_settings=None, latest_payloads=None):
     app = build_test_app(
@@ -136,6 +145,8 @@ def build_test_app(tmp_path, monkeypatch, parsed_settings=None, latest_payloads=
     settings = parsed_settings or {"devices": {}}
     DummyDevicePoller.latest_payloads = latest_payloads or {}
     DummyDevicePoller.latest_control_inputs = None
+    DummyDevicePoller.latest_control_decision = None
+    DummyDevicePoller.recorded_control_decisions = []
     DummyDevicePoller.metric_catalog = {}
     DummyDevicePoller.economics_metadata = {
         "enabled": True,
@@ -379,6 +390,25 @@ def test_control_inputs_api_returns_latest_payload(tmp_path, monkeypatch):
     assert payload["data"] is not None
     assert payload["data"]["indoor_temp"] == 21.5
     assert payload["data"]["power_sources"] == ["whatsminer:1:power"]
+
+
+def test_control_decisions_api_returns_latest_payload(tmp_path, monkeypatch):
+    routes = build_routes(tmp_path, monkeypatch)
+    DummyDevicePoller.latest_control_decision = {
+        "ts": 456,
+        "mode": "room_target",
+        "resolved_target_room_temp_c": 20.0,
+        "resolved_target_supply_temp_c": 42.5,
+        "requested_power_percent": 67.0,
+        "requested_power_w": None,
+        "override_reason": None,
+    }
+
+    payload = routes["/api/control-decisions/latest"]()
+
+    assert payload["data"] is not None
+    assert payload["data"]["mode"] == "room_target"
+    assert payload["data"]["resolved_target_supply_temp_c"] == 42.5
 
 
 def test_metrics_catalog_api_returns_catalog(tmp_path, monkeypatch):
@@ -1433,21 +1463,24 @@ def test_run_heating_mode_control_routes_room_target_with_control_inputs(monkeyp
     monkeypatch.setattr(
         main,
         "_apply_room_target_heating_mode",
-        lambda miner, settings_data, latest_control_inputs: called.append(
-            ("room_target", latest_control_inputs)
-        ),
+        lambda miner, settings_data, latest_control_inputs, decision_state=None: (
+            setattr(decision_state, "mode", "room_target") if decision_state is not None else None,
+            called.append(("room_target", latest_control_inputs, decision_state)),
+        )[-1],
         raising=False,
     )
     monkeypatch.setattr(
         main,
         "_apply_fixed_power_heating_mode",
-        lambda miner, settings_data: called.append(("fixed_power", None)),
+        lambda miner, settings_data, decision_state=None: called.append(("fixed_power", None, decision_state)),
         raising=False,
     )
 
-    main._run_heating_mode_control(
-        SimpleNamespace(get_latest_control_inputs=lambda: control_inputs)
+    poller = SimpleNamespace(
+        get_latest_control_inputs=lambda: control_inputs,
+        record_control_decision=lambda decision: called.append(("persist", decision, None)),
     )
+    main._run_heating_mode_control(poller)
 
     assert DummyMiner.init_kwargs[-1] == {
         "host": "miner.local",
@@ -1457,7 +1490,10 @@ def test_run_heating_mode_control_routes_room_target_with_control_inputs(monkeyp
         "timeout": 12,
         "max_power": 3800,
     }
-    assert called == [("room_target", control_inputs)]
+    assert called[0][0] == "room_target"
+    assert called[0][1] == control_inputs
+    assert called[0][2] is not None
+    assert called[1][0] == "persist"
 
 
 def test_heating_curve_api_reads_and_writes_section(tmp_path, monkeypatch):

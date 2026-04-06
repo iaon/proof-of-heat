@@ -139,8 +139,37 @@ class FixedSupplyTempMeasurement:
     age_ms: int | None
 
 
+@dataclass
+class ControlDecision:
+    ts: int | None = None
+    mode: str | None = None
+    resolved_target_room_temp_c: float | None = None
+    resolved_target_supply_temp_c: float | None = None
+    requested_power_percent: float | None = None
+    requested_power_w: float | None = None
+    override_reason: str | None = None
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "ts": self.ts,
+            "mode": self.mode,
+            "resolved_target_room_temp_c": self.resolved_target_room_temp_c,
+            "resolved_target_supply_temp_c": self.resolved_target_supply_temp_c,
+            "requested_power_percent": self.requested_power_percent,
+            "requested_power_w": self.requested_power_w,
+            "override_reason": self.override_reason,
+        }
+
+
 def clear_fixed_supply_temp_runtime_state() -> None:
     _FIXED_SUPPLY_TEMP_RUNTIME_STATE.reset()
+
+
+def resolve_control_decision_ts(control_inputs: dict[str, Any] | None) -> int:
+    ts_ms = safe_int(control_inputs.get("ts")) if isinstance(control_inputs, dict) else None
+    if ts_ms is not None and ts_ms >= 0:
+        return ts_ms
+    return int(datetime.now(timezone.utc).timestamp() * 1000)
 
 
 def resolve_room_target_temp_c(heating_mode: dict[str, Any] | None) -> float | None:
@@ -275,6 +304,7 @@ def apply_fixed_power_heating_mode(
     settings_data: dict[str, Any],
     *,
     logger: logging.Logger,
+    decision_state: ControlDecision | None = None,
 ) -> dict[str, Any] | None:
     if not isinstance(settings_data, dict):
         logger.debug("Fixed power mode skipped: settings payload is not a mapping")
@@ -299,6 +329,10 @@ def apply_fixed_power_heating_mode(
     if target_power is None:
         logger.warning("Fixed power mode skipped: params.power_w is missing or invalid")
         return None
+    if decision_state is not None:
+        decision_state.ts = int(datetime.now(timezone.utc).timestamp() * 1000)
+        decision_state.mode = "fixed_power"
+        decision_state.requested_power_w = float(target_power)
 
     logger.debug("Fixed power mode evaluating target power %sW", target_power)
 
@@ -420,13 +454,20 @@ def _apply_supply_temp_heating_mode(
     app_started_at_unix: int,
     default_port: int,
     mode_name: str,
+    mode_key: str,
     runtime_state: FixedSupplyTempRuntimeState | None = None,
     forced_power_percent: int | None = None,
     forced_power_reason: str | None = None,
+    decision_state: ControlDecision | None = None,
 ) -> dict[str, Any] | None:
     if not isinstance(settings_data, dict):
         logger.debug("%s skipped: settings payload is not a mapping", mode_name)
         return None
+    if decision_state is not None:
+        decision_state.ts = resolve_control_decision_ts(control_inputs)
+        decision_state.mode = mode_key
+        decision_state.resolved_target_supply_temp_c = target_supply_temp
+        decision_state.override_reason = forced_power_reason
 
     device = get_primary_whatsminer_device_config(settings_data)
     if device is None:
@@ -503,6 +544,8 @@ def _apply_supply_temp_heating_mode(
             state.calibration_requested = True
             state.baseline_power_w = None
             state.last_power_percent = 100
+            if decision_state is not None:
+                decision_state.requested_power_percent = 100.0
             return response
         if up_freq_finish != 1:
             logger.debug(
@@ -600,11 +643,19 @@ def _apply_supply_temp_heating_mode(
             mode_name,
             state.last_power_percent,
         )
+        if decision_state is not None:
+            decision_state.requested_power_percent = (
+                float(state.last_power_percent)
+                if state.last_power_percent is not None
+                else None
+            )
         return None
     measured_supply_temp = measurement.corrected_value_c
     reported_power_percent = estimate_power_percent(current_power, state.baseline_power_w)
 
     if forced_power_percent is not None:
+        if decision_state is not None:
+            decision_state.requested_power_percent = float(forced_power_percent)
         if reported_power_percent is not None and abs(reported_power_percent - forced_power_percent) <= 2:
             logger.info(
                 "%s keeping power_percent at %s%% while override is active (reported=%s%% reason=%s raw=%.2fC corrected=%.2fC target=%.2fC source=%r)",
@@ -659,6 +710,12 @@ def _apply_supply_temp_heating_mode(
             tolerance_c,
             measurement.source,
         )
+        if decision_state is not None:
+            decision_state.requested_power_percent = (
+                float(state.last_power_percent)
+                if state.last_power_percent is not None
+                else None
+            )
         return None
 
     if error_c > tolerance_c:
@@ -687,6 +744,8 @@ def _apply_supply_temp_heating_mode(
             )
         )
     )
+    if decision_state is not None:
+        decision_state.requested_power_percent = float(desired_percent)
     logger.debug(
         "%s control decision: raw=%.2fC corrected=%.2fC target=%.2fC error=%.2fC effective_error=%.2fC tolerance=%.2fC baseline_power_w=%.1f min_power=%r min_percent=%s reference_percent=%s desired_percent=%s reported_percent=%r last_percent=%r source=%r",
         mode_name,
@@ -787,6 +846,7 @@ def apply_fixed_supply_temp_heating_mode(
     app_started_at_unix: int,
     default_port: int,
     runtime_state: FixedSupplyTempRuntimeState | None = None,
+    decision_state: ControlDecision | None = None,
 ) -> dict[str, Any] | None:
     if not isinstance(settings_data, dict):
         logger.debug("Fixed supply temp mode skipped: settings payload is not a mapping")
@@ -830,7 +890,9 @@ def apply_fixed_supply_temp_heating_mode(
         app_started_at_unix=app_started_at_unix,
         default_port=default_port,
         mode_name="Fixed supply temp mode",
+        mode_key="fixed_supply_temp",
         runtime_state=runtime_state,
+        decision_state=decision_state,
     )
 
 
@@ -843,6 +905,7 @@ def apply_room_target_heating_mode(
     app_started_at_unix: int,
     default_port: int,
     runtime_state: FixedSupplyTempRuntimeState | None = None,
+    decision_state: ControlDecision | None = None,
 ) -> dict[str, Any] | None:
     if not isinstance(settings_data, dict):
         logger.debug("Room target mode skipped: settings payload is not a mapping")
@@ -865,6 +928,10 @@ def apply_room_target_heating_mode(
     if target_room_temp_c is None:
         logger.warning("Room target mode skipped: target_room_temp_c is missing or invalid")
         return None
+    if decision_state is not None:
+        decision_state.ts = resolve_control_decision_ts(control_inputs)
+        decision_state.mode = "room_target"
+        decision_state.resolved_target_room_temp_c = target_room_temp_c
     if not isinstance(control_inputs, dict):
         logger.debug("Room target mode skipped: latest control inputs unavailable")
         return None
@@ -886,6 +953,8 @@ def apply_room_target_heating_mode(
         outdoor_temp_c=outdoor_temp_c,
         heating_curve=heating_curve,
     )
+    if decision_state is not None:
+        decision_state.resolved_target_supply_temp_c = target_supply_temp_c
 
     forced_power_percent: int | None = None
     forced_power_reason: str | None = None
@@ -922,7 +991,9 @@ def apply_room_target_heating_mode(
         app_started_at_unix=app_started_at_unix,
         default_port=default_port,
         mode_name="Room target mode",
+        mode_key="room_target",
         runtime_state=runtime_state,
         forced_power_percent=forced_power_percent,
         forced_power_reason=forced_power_reason,
+        decision_state=decision_state,
     )

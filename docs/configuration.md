@@ -291,6 +291,8 @@ Current status:
 - `fixed_power`, `fixed_supply_temp`, and `room_target` have runtime control loops.
 - `fixed_supply_temp` first sets the miner `power_limit` to device `max_power`, waits for `up-freq-finish`, records the resulting actual miner power as the `100%` baseline, and then regulates output through `set.miner.power_percent`.
 - `room_target` computes a supply target from the heating curve and then uses the same calibrated `set.miner.power_percent` loop as `fixed_supply_temp`.
+- The latest controller decision is exposed at `/api/control-decisions/latest`.
+- Controller decisions are also written into SQLite `metrics` as device `control:main` with metric names such as `resolved_target_room_temp_c`, `resolved_target_supply_temp_c`, `requested_power_percent`, and `requested_power_w`.
 
 ### `economics`
 

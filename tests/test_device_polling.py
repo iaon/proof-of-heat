@@ -715,6 +715,69 @@ def test_control_inputs_ignore_stale_metrics_and_default_power_to_zero(tmp_path)
     assert row == (None, 0.0, "[]")
 
 
+def test_control_decisions_are_persisted_and_written_to_metrics(tmp_path):
+    poller = DevicePoller({}, data_dir=tmp_path)
+
+    poller.record_control_decision(
+        {
+            "ts": 1_234,
+            "mode": "room_target",
+            "resolved_target_room_temp_c": 20.0,
+            "resolved_target_supply_temp_c": 41.5,
+            "requested_power_percent": 72.0,
+            "requested_power_w": None,
+            "override_reason": "cold_start",
+        }
+    )
+
+    latest = poller.get_latest_control_decision()
+    assert latest == {
+        "ts": 1_234,
+        "mode": "room_target",
+        "resolved_target_room_temp_c": 20.0,
+        "resolved_target_supply_temp_c": 41.5,
+        "requested_power_percent": 72.0,
+        "requested_power_w": None,
+        "override_reason": "cold_start",
+    }
+
+    metric_names = set(poller.list_metric_names("control", "main"))
+    assert {
+        "resolved_target_room_temp_c",
+        "resolved_target_supply_temp_c",
+        "requested_power_percent",
+    } <= metric_names
+
+    supply_points = poller.get_metric_series(
+        "control",
+        "main",
+        "resolved_target_supply_temp_c",
+        None,
+        None,
+    )
+    assert supply_points == [{"ts": 1_234, "value": 41.5}]
+
+    db_path = tmp_path / "telemetry.sqlite3"
+    with sqlite3.connect(db_path) as conn:
+        row = conn.execute(
+            """
+            SELECT
+                ts,
+                mode,
+                resolved_target_room_temp_c,
+                resolved_target_supply_temp_c,
+                requested_power_percent,
+                requested_power_w,
+                override_reason
+            FROM control_decisions
+            ORDER BY id DESC
+            LIMIT 1
+            """
+        ).fetchone()
+
+    assert row == (1_234, "room_target", 20.0, 41.5, 72.0, None, "cold_start")
+
+
 def test_zont_refresh_interval_180_is_valid(monkeypatch, tmp_path):
     settings = {
         "devices": {

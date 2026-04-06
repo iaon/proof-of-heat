@@ -399,6 +399,11 @@ def create_app(
     def get_latest_control_inputs() -> dict[str, Any]:
         return {"data": device_poller.get_latest_control_inputs()}
 
+    @app.get("/api/control-decisions/latest")
+    @app.get("/api/control-decisions/latest/")
+    def get_latest_control_decision() -> dict[str, Any]:
+        return {"data": device_poller.get_latest_control_decision()}
+
     @app.get("/api/economics/current")
     @app.get("/api/economics/current/")
     def get_latest_economics() -> dict[str, Any]:
