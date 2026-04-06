@@ -114,6 +114,7 @@ heating_mode:
 heating_curve:
   slope: 6.0
   exponent: 0.4
+  offset: 0.0
   force_max_power_below_target: true
   force_max_power_margin_c: 5.0
   min_supply_temp_c: 25.0
@@ -240,6 +241,7 @@ Supported fields:
 
 - `slope` — heating curve gain used for preview and control calculations.
 - `exponent` — nonlinear exponent of the heating curve. The current default starting value is `0.4`.
+- `offset` — optional additive offset in Celsius applied by the preview formula. Defaults to `0.0`.
 - `force_max_power_below_target` — when enabled, force maximum power if indoor temperature is too far below target.
 - `force_max_power_margin_c` — temperature gap in Celsius between target and indoor temperature that triggers forced maximum power.
 - `min_supply_temp_c` — lower clamp for calculated supply temperature.
@@ -249,7 +251,7 @@ Current UI:
 
 - `/heating-curve` provides a dedicated editor with number inputs and a graph preview.
 - the preview reads `target_room_temp_c` from `heating_mode.params` when available.
-- the preview formula is `slope * (target_room_temp_c - outdoor_temp_c) ^ exponent + outdoor_temp_c + target_room_temp_c`, clamped between `min_supply_temp_c` and `max_supply_temp_c`.
+- the preview formula is `slope * (target_room_temp_c - outdoor_temp_c) ^ exponent + offset + target_room_temp_c`, clamped between `min_supply_temp_c` and `max_supply_temp_c`.
 - the chart is drawn only up to `outdoor_temp_c <= target_room_temp_c` so fractional exponents remain defined.
 
 ### `heating_mode`

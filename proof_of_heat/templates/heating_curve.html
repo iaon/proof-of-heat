@@ -23,6 +23,9 @@
         <div class="row">
             <label for="target-room-temp-c">Target room °C</label>
             <input id="target-room-temp-c" type="number" step="0.1" readonly />
+
+            <label for="offset">Offset</label>
+            <input id="offset" type="number" step="0.1" />
         </div>
 
         <div class="row">
@@ -51,7 +54,7 @@
 
     <div class="card">
         <strong>Preview</strong>
-        <p class="muted">Preview uses <code>target_room_temp_c</code> from <code>heating_mode.params</code> and plots <code>Ft = S * (Tt - Ct)^exponent + Ct + Tt</code>, clamped between min and max supply temperatures. The chart is drawn only for outdoor temperatures up to the room target so the exponent stays defined.</p>
+        <p class="muted">Preview uses <code>target_room_temp_c</code> from <code>heating_mode.params</code> and plots <code>Ft = S * (Tt - Ct)^exponent + O + Tt</code>, where <code>O</code> is the optional offset from <code>heating_curve.offset</code>. The result is clamped between min and max supply temperatures, and the chart is drawn only for outdoor temperatures up to the room target so the exponent stays defined.</p>
         <canvas id="heating-curve-chart" height="120"></canvas>
     </div>
 

@@ -2,6 +2,7 @@ const apiUrl = (path) => `${rootPath}${path}`;
 const slopeEl = document.getElementById("slope");
 const exponentEl = document.getElementById("exponent");
 const targetRoomTempCEl = document.getElementById("target-room-temp-c");
+const offsetEl = document.getElementById("offset");
 const forceMaxPowerBelowTargetEl = document.getElementById("force-max-power-below-target");
 const forceMaxPowerMarginCEl = document.getElementById("force-max-power-margin-c");
 const minSupplyTempCEl = document.getElementById("min-supply-temp-c");
@@ -15,12 +16,14 @@ let targetRoomTempC = 22.0;
 function getFormData() {
     const slope = Number(slopeEl.value);
     const exponent = Number(exponentEl.value);
+    const offset = Number(offsetEl.value);
     const forceMaxPowerMarginC = Number(forceMaxPowerMarginCEl.value);
     const minSupplyTempC = Number(minSupplyTempCEl.value);
     const maxSupplyTempC = Number(maxSupplyTempCEl.value);
     return {
         slope: Number.isFinite(slope) ? slope : 6.0,
         exponent: Number.isFinite(exponent) ? exponent : 0.4,
+        offset: Number.isFinite(offset) ? offset : 0.0,
         force_max_power_below_target: Boolean(forceMaxPowerBelowTargetEl.checked),
         force_max_power_margin_c: Number.isFinite(forceMaxPowerMarginC) ? forceMaxPowerMarginC : 5.0,
         min_supply_temp_c: Number.isFinite(minSupplyTempC) ? minSupplyTempC : 25.0,
@@ -31,6 +34,7 @@ function getFormData() {
 function applyFormData(data) {
     slopeEl.value = data.slope;
     exponentEl.value = data.exponent;
+    offsetEl.value = data.offset;
     forceMaxPowerBelowTargetEl.checked = Boolean(data.force_max_power_below_target);
     forceMaxPowerMarginCEl.value = data.force_max_power_margin_c;
     minSupplyTempCEl.value = data.min_supply_temp_c;
@@ -43,7 +47,7 @@ function computeCurvePoint(outdoorTempC, data) {
     if (delta < 0) {
         return null;
     }
-    const unclamped = (data.slope * (delta ** data.exponent)) + outdoorTempC + targetRoomTempC;
+    const unclamped = (data.slope * (delta ** data.exponent)) + data.offset + targetRoomTempC;
     return Math.min(data.max_supply_temp_c, Math.max(data.min_supply_temp_c, unclamped));
 }
 
@@ -68,7 +72,7 @@ function renderPreview() {
     targetRoomTempCEl.value = String(targetRoomTempC);
     previewEl.textContent = JSON.stringify({
         target_room_temp_c: targetRoomTempC,
-        formula: "Ft = S * (Tt - Ct)^exponent + Ct + Tt",
+        formula: "Ft = S * (Tt - Ct)^exponent + O + Tt",
         heating_curve: data,
     }, null, 2);
 
@@ -176,6 +180,7 @@ async function saveHeatingCurve() {
 
 slopeEl.addEventListener("input", renderPreview);
 exponentEl.addEventListener("input", renderPreview);
+offsetEl.addEventListener("input", renderPreview);
 forceMaxPowerBelowTargetEl.addEventListener("change", renderPreview);
 forceMaxPowerMarginCEl.addEventListener("input", renderPreview);
 minSupplyTempCEl.addEventListener("input", renderPreview);

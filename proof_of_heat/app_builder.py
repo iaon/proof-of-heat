@@ -20,6 +20,7 @@ STATIC_DIR = Path(__file__).with_name("static")
 HEATING_CURVE_DEFAULTS: dict[str, Any] = {
     "slope": 6.0,
     "exponent": 0.4,
+    "offset": 0.0,
     "force_max_power_below_target": True,
     "force_max_power_margin_c": 5.0,
     "min_supply_temp_c": 25.0,
@@ -113,6 +114,10 @@ def _normalize_heating_curve(value: Any) -> dict[str, Any]:
         curve.get("exponent"),
         HEATING_CURVE_DEFAULTS["exponent"],
     )
+    offset = _coerce_float(
+        curve.get("offset"),
+        HEATING_CURVE_DEFAULTS["offset"],
+    )
     force_max_power_below_target = _coerce_bool(
         curve.get("force_max_power_below_target"),
         HEATING_CURVE_DEFAULTS["force_max_power_below_target"],
@@ -134,6 +139,7 @@ def _normalize_heating_curve(value: Any) -> dict[str, Any]:
     return {
         "slope": slope,
         "exponent": exponent,
+        "offset": offset,
         "force_max_power_below_target": force_max_power_below_target,
         "force_max_power_margin_c": force_max_power_margin_c,
         "min_supply_temp_c": min_supply_temp_c,
