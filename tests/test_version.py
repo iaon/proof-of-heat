@@ -1,35 +1,15 @@
 from proof_of_heat import version
 
 
-def test_get_display_version_uses_explicit_override(monkeypatch):
-    monkeypatch.setenv("PROOF_OF_HEAT_DISPLAY_VERSION", "1.2.3")
-    monkeypatch.setenv("PROOF_OF_HEAT_VERSION", "9.9.9")
-    monkeypatch.setenv("PROOF_OF_HEAT_COMMIT", "abcdef0")
+def test_get_display_version_reads_version_file(tmp_path, monkeypatch):
+    version_file = tmp_path / "VERSION"
+    version_file.write_text("1.2.3\n", encoding="utf-8")
+    monkeypatch.setattr(version, "VERSION_FILE", version_file)
 
     assert version.get_display_version() == "1.2.3"
 
 
-def test_get_display_version_appends_commit_for_non_release(monkeypatch):
-    monkeypatch.delenv("PROOF_OF_HEAT_DISPLAY_VERSION", raising=False)
-    monkeypatch.setenv("PROOF_OF_HEAT_VERSION", "1.2.3")
-    monkeypatch.delenv("PROOF_OF_HEAT_COMMIT", raising=False)
-    monkeypatch.setattr(version, "_run_git", lambda *args: "b2d19e3" if args == ("rev-parse", "--short", "HEAD") else None)
+def test_get_display_version_returns_unknown_when_version_file_missing(tmp_path, monkeypatch):
+    monkeypatch.setattr(version, "VERSION_FILE", tmp_path / "VERSION")
 
-    assert version.get_display_version() == "1.2.3-b2d19e3"
-
-
-def test_get_display_version_omits_commit_for_release_tag(monkeypatch):
-    monkeypatch.delenv("PROOF_OF_HEAT_DISPLAY_VERSION", raising=False)
-    monkeypatch.setenv("PROOF_OF_HEAT_VERSION", "1.2.3")
-    monkeypatch.delenv("PROOF_OF_HEAT_COMMIT", raising=False)
-
-    def fake_run_git(*args):
-        if args == ("tag", "--points-at", "HEAD"):
-            return "v1.2.3"
-        if args == ("rev-parse", "--short", "HEAD"):
-            return "b2d19e3"
-        return None
-
-    monkeypatch.setattr(version, "_run_git", fake_run_git)
-
-    assert version.get_display_version() == "1.2.3"
+    assert version.get_display_version() == "unknown"

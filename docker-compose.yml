@@ -2,9 +2,6 @@ services:
   app:
     build:
       context: .
-      args:
-        PROOF_OF_HEAT_DISPLAY_VERSION: ${PROOF_OF_HEAT_DISPLAY_VERSION:-}
-        PROOF_OF_HEAT_COMMIT: ${PROOF_OF_HEAT_COMMIT:-}
     ports:
       - "8000:8000"
     volumes:

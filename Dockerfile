@@ -7,7 +7,6 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 WORKDIR /app
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends git \
     && groupadd --gid 1000 app \
     && useradd --uid 1000 --gid 1000 --create-home --home-dir /home/app --shell /bin/sh app \
     && rm -rf /var/lib/apt/lists/*
@@ -24,12 +23,6 @@ RUN mkdir -p /app/data \
     && chown -R app:app /app /home/app
 
 USER 1000:1000
-
-ARG PROOF_OF_HEAT_DISPLAY_VERSION=""
-ARG PROOF_OF_HEAT_COMMIT=""
-
-ENV PROOF_OF_HEAT_DISPLAY_VERSION=${PROOF_OF_HEAT_DISPLAY_VERSION} \
-    PROOF_OF_HEAT_COMMIT=${PROOF_OF_HEAT_COMMIT}
 
 EXPOSE 8000
 

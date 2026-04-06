@@ -19,9 +19,9 @@ or dependency updates:
 ./run_app.sh
 ```
 
-This wrapper keeps the displayed app version consistent between local runs and
-webhook-based deploys: release builds use `VERSION`, non-release builds use
-`VERSION-<shortsha>`.
+The displayed app version is read directly from `VERSION` for local runs and
+containerized deploys. Update that file when you want to change what appears in
+startup logs and the UI footer.
 
 Alternatively, build the image without Compose:
 
