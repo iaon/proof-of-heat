@@ -31,7 +31,8 @@ from proof_of_heat.services.weather import fetch_met_no_weather, fetch_open_mete
 ensure_trace_level()
 logger = logging.getLogger("proof_of_heat.device_polling")
 
-CONTROL_DEVICE_TYPE = "control"
+CONTROL_INPUTS_DEVICE_TYPE = "control_inputs"
+CONTROL_DECISIONS_DEVICE_TYPE = "control_decisions"
 CONTROL_DEVICE_ID = "main"
 
 @dataclass(frozen=True)
@@ -376,7 +377,7 @@ class DevicePoller:
             metric_rows.append(
                 {
                     "ts": ts_ms,
-                    "device_type": CONTROL_DEVICE_TYPE,
+                    "device_type": CONTROL_DECISIONS_DEVICE_TYPE,
                     "device_id": CONTROL_DEVICE_ID,
                     "metric": "resolved_target_room_temp_c",
                     "value": row["resolved_target_room_temp_c"],
@@ -387,7 +388,7 @@ class DevicePoller:
             metric_rows.append(
                 {
                     "ts": ts_ms,
-                    "device_type": CONTROL_DEVICE_TYPE,
+                    "device_type": CONTROL_DECISIONS_DEVICE_TYPE,
                     "device_id": CONTROL_DEVICE_ID,
                     "metric": "resolved_target_supply_temp_c",
                     "value": row["resolved_target_supply_temp_c"],
@@ -398,7 +399,7 @@ class DevicePoller:
             metric_rows.append(
                 {
                     "ts": ts_ms,
-                    "device_type": CONTROL_DEVICE_TYPE,
+                    "device_type": CONTROL_DECISIONS_DEVICE_TYPE,
                     "device_id": CONTROL_DEVICE_ID,
                     "metric": "requested_power_percent",
                     "value": row["requested_power_percent"],
@@ -409,7 +410,7 @@ class DevicePoller:
             metric_rows.append(
                 {
                     "ts": ts_ms,
-                    "device_type": CONTROL_DEVICE_TYPE,
+                    "device_type": CONTROL_DECISIONS_DEVICE_TYPE,
                     "device_id": CONTROL_DEVICE_ID,
                     "metric": "requested_power_w",
                     "value": row["requested_power_w"],
@@ -966,6 +967,71 @@ class DevicePoller:
                 "power": resolved["power"].value if resolved["power"].value is not None else 0.0,
                 "power_sources": json.dumps(resolved["power"].sources or [], ensure_ascii=False),
             },
+        )
+
+        metric_rows = []
+        if resolved["indoor_temp"].value is not None:
+            metric_rows.append(
+                {
+                    "ts": ts_ms,
+                    "device_type": CONTROL_INPUTS_DEVICE_TYPE,
+                    "device_id": CONTROL_DEVICE_ID,
+                    "metric": "indoor_temp",
+                    "value": resolved["indoor_temp"].value,
+                    "unit": "celsius",
+                }
+            )
+        if resolved["outdoor_temp"].value is not None:
+            metric_rows.append(
+                {
+                    "ts": ts_ms,
+                    "device_type": CONTROL_INPUTS_DEVICE_TYPE,
+                    "device_id": CONTROL_DEVICE_ID,
+                    "metric": "outdoor_temp",
+                    "value": resolved["outdoor_temp"].value,
+                    "unit": "celsius",
+                }
+            )
+        if resolved["supply_temp"].value is not None:
+            metric_rows.append(
+                {
+                    "ts": ts_ms,
+                    "device_type": CONTROL_INPUTS_DEVICE_TYPE,
+                    "device_id": CONTROL_DEVICE_ID,
+                    "metric": "supply_temp",
+                    "value": resolved["supply_temp"].value,
+                    "unit": "celsius",
+                }
+            )
+        metric_rows.append(
+            {
+                "ts": ts_ms,
+                "device_type": CONTROL_INPUTS_DEVICE_TYPE,
+                "device_id": CONTROL_DEVICE_ID,
+                "metric": "power",
+                "value": resolved["power"].value if resolved["power"].value is not None else 0.0,
+                "unit": "w",
+            }
+        )
+        conn.executemany(
+            """
+            INSERT INTO metrics (
+                ts,
+                device_type,
+                device_id,
+                metric,
+                value,
+                unit
+            ) VALUES (
+                :ts,
+                :device_type,
+                :device_id,
+                :metric,
+                :value,
+                :unit
+            )
+            """,
+            metric_rows,
         )
 
     def _resolve_control_input(

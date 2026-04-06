@@ -662,6 +662,13 @@ def test_control_inputs_are_resolved_and_persisted(monkeypatch, tmp_path):
         "met_no:1002:air_temperature",
     ]
 
+    metric_names = set(poller.list_metric_names("control_inputs", "main"))
+    assert {"indoor_temp", "outdoor_temp", "supply_temp", "power"} <= metric_names
+
+    indoor_points = poller.get_metric_series("control_inputs", "main", "indoor_temp", None, None)
+    assert indoor_points
+    assert indoor_points[-1]["value"] == 5.9
+
 
 def test_control_inputs_ignore_stale_metrics_and_default_power_to_zero(tmp_path):
     settings = {
@@ -741,7 +748,7 @@ def test_control_decisions_are_persisted_and_written_to_metrics(tmp_path):
         "override_reason": "cold_start",
     }
 
-    metric_names = set(poller.list_metric_names("control", "main"))
+    metric_names = set(poller.list_metric_names("control_decisions", "main"))
     assert {
         "resolved_target_room_temp_c",
         "resolved_target_supply_temp_c",
@@ -749,7 +756,7 @@ def test_control_decisions_are_persisted_and_written_to_metrics(tmp_path):
     } <= metric_names
 
     supply_points = poller.get_metric_series(
-        "control",
+        "control_decisions",
         "main",
         "resolved_target_supply_temp_c",
         None,
