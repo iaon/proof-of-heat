@@ -115,6 +115,24 @@ class DummyDevicePoller:
 
 
 def build_routes(tmp_path, monkeypatch, parsed_settings=None, latest_payloads=None):
+    app = build_test_app(
+        tmp_path,
+        monkeypatch,
+        parsed_settings=parsed_settings,
+        latest_payloads=latest_payloads,
+    )
+    routes = {}
+    for route in app.routes:
+        if not hasattr(route, "path") or not hasattr(route, "endpoint"):
+            continue
+        routes.setdefault(route.path, route.endpoint)
+        methods = getattr(route, "methods", None) or []
+        for method in methods:
+            routes[f"{method} {route.path}"] = route.endpoint
+    return routes
+
+
+def build_test_app(tmp_path, monkeypatch, parsed_settings=None, latest_payloads=None):
     settings = parsed_settings or {"devices": {}}
     DummyDevicePoller.latest_payloads = latest_payloads or {}
     DummyDevicePoller.latest_control_inputs = None
@@ -157,16 +175,7 @@ def build_routes(tmp_path, monkeypatch, parsed_settings=None, latest_payloads=No
     monkeypatch.setattr(main, "_startup_error", None)
     monkeypatch.setattr(main, "APP_VERSION", "1.2.3-testsha", raising=False)
 
-    app = main.create_app(AppConfig(data_dir=tmp_path))
-    routes = {}
-    for route in app.routes:
-        if not hasattr(route, "path") or not hasattr(route, "endpoint"):
-            continue
-        routes.setdefault(route.path, route.endpoint)
-        methods = getattr(route, "methods", None) or []
-        for method in methods:
-            routes[f"{method} {route.path}"] = route.endpoint
-    return routes
+    return main.create_app(AppConfig(data_dir=tmp_path))
 
 
 def make_request(path: str, root_path: str = "") -> Request:
@@ -202,6 +211,14 @@ def test_ui_served(tmp_path, monkeypatch):
     markup = resp.body.decode()
     assert "proof-of-heat MVP" in markup
     assert "Version 1.2.3-testsha" in markup
+
+
+def test_root_route_uses_fastapi_request_injection(tmp_path, monkeypatch):
+    app = build_test_app(tmp_path, monkeypatch)
+    route = next(route for route in app.routes if getattr(route, "path", None) == "/")
+
+    assert route.dependant.request_param_name == "request"
+    assert route.dependant.query_params == []
 
 
 def test_create_app_logs_version_on_startup(tmp_path, monkeypatch, caplog):

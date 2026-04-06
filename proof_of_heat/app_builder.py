@@ -11,6 +11,11 @@ from typing import Any, Callable
 
 import yaml
 
+try:  # pragma: no cover - imported lazily for endpoint typing when FastAPI is available
+    from fastapi import Request
+except Exception:  # pragma: no cover - diagnostic fallback path
+    Request = Any  # type: ignore[misc,assignment]
+
 TEMPLATES_DIR = Path(__file__).with_name("templates")
 STATIC_DIR = Path(__file__).with_name("static")
 
@@ -240,7 +245,7 @@ def create_app(
 
     app.router.lifespan_context = lifespan
 
-    def render_markup(markup: str, request: Any) -> str:
+    def render_markup(markup: str, request: Request) -> str:
         request_root_path = request.scope.get("root_path", "").rstrip("/")
         return (
             markup.replace("__ROOT_PATH_JSON__", json.dumps(request_root_path))
@@ -264,27 +269,27 @@ def create_app(
 
     @app.get("/", response_class=deps.html_response_cls, include_in_schema=False)
     @app.get("/ui", response_class=deps.html_response_cls, include_in_schema=False)
-    def ui(request: Any) -> Any:
+    def ui(request: Request) -> Any:
         return deps.html_response_cls(render_markup(ui_markup, request))
 
     @app.get("/config", response_class=deps.html_response_cls, include_in_schema=False)
     @app.get("/config/", response_class=deps.html_response_cls, include_in_schema=False)
-    def config_editor(request: Any) -> Any:
+    def config_editor(request: Request) -> Any:
         return deps.html_response_cls(render_markup(CONFIG_MARKUP, request))
 
     @app.get("/metrics", response_class=deps.html_response_cls, include_in_schema=False)
     @app.get("/metrics/", response_class=deps.html_response_cls, include_in_schema=False)
-    def metrics_view(request: Any) -> Any:
+    def metrics_view(request: Request) -> Any:
         return deps.html_response_cls(render_markup(metrics_markup, request))
 
     @app.get("/economics", response_class=deps.html_response_cls, include_in_schema=False)
     @app.get("/economics/", response_class=deps.html_response_cls, include_in_schema=False)
-    def economics_view(request: Any) -> Any:
+    def economics_view(request: Request) -> Any:
         return deps.html_response_cls(render_markup(economics_markup, request))
 
     @app.get("/heating-curve", response_class=deps.html_response_cls, include_in_schema=False)
     @app.get("/heating-curve/", response_class=deps.html_response_cls, include_in_schema=False)
-    def heating_curve_view(request: Any) -> Any:
+    def heating_curve_view(request: Request) -> Any:
         return deps.html_response_cls(render_markup(heating_curve_markup, request))
 
     @app.get("/api/config")
