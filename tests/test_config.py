@@ -94,6 +94,18 @@ def test_default_settings_yaml_includes_database_maintenance_settings():
                 "enabled": True,
                 "retention_seconds": 86400,
                 "interval_seconds": 3600,
+            },
+            "metrics": {
+                "enabled": True,
+                "interval_seconds": 3600,
+                "raw_retention_seconds": 604800,
+                "rollups": [
+                    {
+                        "resolution_seconds": 600,
+                        "retention_seconds": 15552000,
+                        "sample": "last",
+                    }
+                ],
             }
         },
         "maintenance": {

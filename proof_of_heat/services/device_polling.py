@@ -54,6 +54,20 @@ class RawEventsRetentionPolicy:
 
 
 @dataclass(frozen=True)
+class MetricRollupPolicy:
+    resolution_seconds: int
+    retention_seconds: int
+    sample: str
+
+
+@dataclass(frozen=True)
+class MetricsRetentionPolicy:
+    interval_seconds: int
+    raw_retention_seconds: int
+    rollup: MetricRollupPolicy
+
+
+@dataclass(frozen=True)
 class DatabaseVacuumPolicy:
     enabled: bool
     interval_seconds: int
@@ -141,6 +155,17 @@ class DevicePoller:
                     job_id="retention-raw-events",
                     interval_seconds=raw_events_retention.interval_seconds,
                     handler=self._apply_raw_events_retention,
+                    run_on_start=True,
+                )
+            )
+
+        metrics_retention = self._load_metrics_retention_policy()
+        if metrics_retention is not None:
+            maintenance_jobs.append(
+                MaintenanceJob(
+                    job_id="retention-metrics",
+                    interval_seconds=metrics_retention.interval_seconds,
+                    handler=self._apply_metrics_retention,
                     run_on_start=True,
                 )
             )
@@ -240,7 +265,15 @@ class DevicePoller:
             with sqlite3.connect(self._db_path) as conn:
                 self._ensure_schema(conn)
                 rows = conn.execute(
-                    "SELECT DISTINCT device_type FROM metrics ORDER BY device_type"
+                    """
+                    SELECT DISTINCT device_type
+                    FROM (
+                        SELECT device_type FROM metrics
+                        UNION ALL
+                        SELECT device_type FROM metric_rollups
+                    )
+                    ORDER BY device_type
+                    """
                 ).fetchall()
         return [row[0] for row in rows if row and row[0]]
 
@@ -253,8 +286,15 @@ class DevicePoller:
                 rows = conn.execute(
                     """
                     SELECT DISTINCT device_id
-                    FROM metrics
-                    WHERE device_type = :device_type
+                    FROM (
+                        SELECT device_id
+                        FROM metrics
+                        WHERE device_type = :device_type
+                        UNION ALL
+                        SELECT device_id
+                        FROM metric_rollups
+                        WHERE device_type = :device_type
+                    )
                     ORDER BY device_id
                     """,
                     {"device_type": device_type},
@@ -270,9 +310,17 @@ class DevicePoller:
                 rows = conn.execute(
                     """
                     SELECT DISTINCT metric
-                    FROM metrics
-                    WHERE device_type = :device_type
-                      AND device_id = :device_id
+                    FROM (
+                        SELECT metric
+                        FROM metrics
+                        WHERE device_type = :device_type
+                          AND device_id = :device_id
+                        UNION ALL
+                        SELECT metric
+                        FROM metric_rollups
+                        WHERE device_type = :device_type
+                          AND device_id = :device_id
+                    )
                     ORDER BY metric
                     """,
                     {"device_type": device_type, "device_id": device_id},
@@ -288,7 +336,13 @@ class DevicePoller:
                 rows = conn.execute(
                     """
                     SELECT device_type, device_id, metric
-                    FROM metrics
+                    FROM (
+                        SELECT device_type, device_id, metric
+                        FROM metrics
+                        UNION ALL
+                        SELECT device_type, device_id, metric
+                        FROM metric_rollups
+                    )
                     GROUP BY device_type, device_id, metric
                     ORDER BY device_type, device_id, metric
                     """
@@ -310,6 +364,10 @@ class DevicePoller:
     ) -> list[dict[str, Any]]:
         if not self._db_path:
             return []
+        if start_ms is not None and end_ms is not None and start_ms > end_ms:
+            return []
+
+        policy = self._load_metrics_retention_policy()
         params: dict[str, Any] = {
             "device_type": device_type,
             "device_id": device_id,
@@ -326,17 +384,106 @@ class DevicePoller:
         if end_ms is not None:
             clauses.append("ts <= :end_ms")
             params["end_ms"] = end_ms
-        where_clause = " AND ".join(clauses)
-        query = f"""
-            SELECT ts, value
-            FROM metrics
-            WHERE {where_clause}
-            ORDER BY ts
-        """
+        metric_queries: list[tuple[str, dict[str, Any]]] = []
+        if policy is None:
+            where_clause = " AND ".join(clauses)
+            metric_queries.append(
+                (
+                    f"""
+                    SELECT ts, value
+                    FROM metrics
+                    WHERE {where_clause}
+                    ORDER BY ts
+                    """,
+                    params,
+                )
+            )
+        else:
+            now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+            raw_cutoff_ms = now_ms - (policy.raw_retention_seconds * 1000)
+
+            rollup_params = {
+                **params,
+                "resolution_seconds": policy.rollup.resolution_seconds,
+            }
+            rollup_clauses = [
+                "resolution_seconds = :resolution_seconds",
+                "device_type = :device_type",
+                "device_id = :device_id",
+                "metric = :metric",
+            ]
+            if start_ms is not None:
+                rollup_clauses.append("ts >= :start_ms")
+            rollup_end_ms = raw_cutoff_ms - 1
+            if end_ms is not None:
+                rollup_end_ms = min(rollup_end_ms, end_ms)
+            if start_ms is None or start_ms <= rollup_end_ms:
+                rollup_params["rollup_end_ms"] = rollup_end_ms
+                rollup_clauses.append("ts <= :rollup_end_ms")
+                metric_queries.append(
+                    (
+                        f"""
+                        SELECT ts, value
+                        FROM metric_rollups
+                        WHERE {" AND ".join(rollup_clauses)}
+                        ORDER BY ts
+                        """,
+                        rollup_params,
+                    )
+                )
+
+            raw_params = dict(params)
+            raw_clauses = list(clauses)
+            raw_start_ms = raw_cutoff_ms
+            if start_ms is not None:
+                raw_start_ms = max(raw_start_ms, start_ms)
+            if end_ms is None or raw_start_ms <= end_ms:
+                raw_params["raw_start_ms"] = raw_start_ms
+                raw_clauses.append("ts >= :raw_start_ms")
+                metric_queries.append(
+                    (
+                        f"""
+                        SELECT ts, value
+                        FROM metrics
+                        WHERE {" AND ".join(raw_clauses)}
+                        ORDER BY ts
+                        """,
+                        raw_params,
+                    )
+                )
+
         with self._db_lock:
             with sqlite3.connect(self._db_path) as conn:
                 self._ensure_schema(conn)
-                rows = conn.execute(query, params).fetchall()
+                rows: list[tuple[int, float]] = []
+                for query, query_params in metric_queries:
+                    query_rows = conn.execute(query, query_params).fetchall()
+                    if query_rows or "metric_rollups" not in query:
+                        rows.extend(query_rows)
+                        continue
+
+                    fallback_params = dict(params)
+                    fallback_clauses = list(clauses)
+                    if start_ms is not None:
+                        fallback_clauses.append("ts >= :start_ms")
+                    fallback_end_ms = raw_cutoff_ms - 1
+                    if end_ms is not None:
+                        fallback_end_ms = min(fallback_end_ms, end_ms)
+                    if start_ms is None or start_ms <= fallback_end_ms:
+                        fallback_params["fallback_end_ms"] = fallback_end_ms
+                        fallback_clauses.append("ts <= :fallback_end_ms")
+                        fallback_rows = conn.execute(
+                            f"""
+                            SELECT ts, value
+                            FROM metrics
+                            WHERE {" AND ".join(fallback_clauses)}
+                            ORDER BY ts
+                            """,
+                            fallback_params,
+                        ).fetchall()
+                        rows.extend(fallback_rows)
+
+        rows.sort(key=lambda row: int(row[0]))
         return [{"ts": int(ts), "value": float(value)} for ts, value in rows]
 
     def get_latest_control_inputs(self) -> dict[str, Any] | None:
@@ -990,6 +1137,80 @@ class DevicePoller:
             interval_seconds=interval_seconds,
         )
 
+    def _load_metrics_retention_policy(self) -> MetricsRetentionPolicy | None:
+        if not self._db_path or not isinstance(self._settings, dict):
+            return None
+
+        database = self._settings.get("database")
+        if not isinstance(database, dict):
+            return None
+        retention = database.get("retention")
+        if not isinstance(retention, dict):
+            return None
+        metrics = retention.get("metrics")
+        if not isinstance(metrics, dict):
+            return None
+        if metrics.get("enabled") is False:
+            return None
+
+        interval_seconds = self._safe_int(metrics.get("interval_seconds"))
+        if interval_seconds is None or interval_seconds <= 0:
+            logger.warning("Skipping metrics retention due to invalid interval_seconds: %r", metrics)
+            return None
+
+        raw_retention_seconds = self._safe_int(metrics.get("raw_retention_seconds"))
+        if raw_retention_seconds is None or raw_retention_seconds <= 0:
+            logger.warning("Skipping metrics retention due to invalid raw_retention_seconds: %r", metrics)
+            return None
+
+        rollups = metrics.get("rollups")
+        if not isinstance(rollups, list) or not rollups:
+            logger.warning("Skipping metrics retention due to missing rollups: %r", metrics)
+            return None
+
+        valid_rollups: list[MetricRollupPolicy] = []
+        for rollup in rollups:
+            parsed = self._parse_metric_rollup_policy(rollup)
+            if parsed is not None:
+                valid_rollups.append(parsed)
+
+        if not valid_rollups:
+            logger.warning("Skipping metrics retention due to invalid rollups: %r", metrics)
+            return None
+        if len(valid_rollups) > 1:
+            logger.warning(
+                "Only the first metrics rollup level is currently supported; ignoring %s extra rollups",
+                len(valid_rollups) - 1,
+            )
+
+        return MetricsRetentionPolicy(
+            interval_seconds=interval_seconds,
+            raw_retention_seconds=raw_retention_seconds,
+            rollup=valid_rollups[0],
+        )
+
+    def _parse_metric_rollup_policy(self, rollup: Any) -> MetricRollupPolicy | None:
+        if not isinstance(rollup, dict):
+            return None
+
+        resolution_seconds = self._safe_int(rollup.get("resolution_seconds"))
+        retention_seconds = self._safe_int(rollup.get("retention_seconds"))
+        sample = str(rollup.get("sample") or "last").strip().lower()
+        if resolution_seconds is None or resolution_seconds <= 0:
+            logger.warning("Skipping metrics rollup due to invalid resolution_seconds: %r", rollup)
+            return None
+        if retention_seconds is None or retention_seconds <= 0:
+            logger.warning("Skipping metrics rollup due to invalid retention_seconds: %r", rollup)
+            return None
+        if sample not in {"last", "first", "any"}:
+            logger.warning("Skipping metrics rollup due to unsupported sample strategy: %r", rollup)
+            return None
+        return MetricRollupPolicy(
+            resolution_seconds=resolution_seconds,
+            retention_seconds=retention_seconds,
+            sample=sample,
+        )
+
     def _load_database_vacuum_policy(self) -> DatabaseVacuumPolicy | None:
         if not self._db_path or not isinstance(self._settings, dict):
             return None
@@ -1061,6 +1282,159 @@ class DevicePoller:
             policy.retention_seconds,
         )
         return deleted_rows
+
+    def _apply_metrics_retention(self, reference_ts_ms: int | None = None) -> dict[str, int]:
+        policy = self._load_metrics_retention_policy()
+        if policy is None or not self._db_path:
+            return {
+                "rolled_up_rows": 0,
+                "deleted_raw_rows": 0,
+                "deleted_rollup_rows": 0,
+            }
+
+        now_ms = reference_ts_ms
+        if now_ms is None:
+            now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+        raw_cutoff_ms = now_ms - (policy.raw_retention_seconds * 1000)
+        rollup_cutoff_ms = now_ms - (policy.rollup.retention_seconds * 1000)
+
+        with self._db_lock:
+            with sqlite3.connect(self._db_path) as conn:
+                self._ensure_schema(conn)
+                raw_rows = conn.execute(
+                    """
+                    SELECT
+                        id,
+                        ts,
+                        device_type,
+                        device_id,
+                        metric,
+                        value,
+                        unit
+                    FROM metrics
+                    WHERE ts < :raw_cutoff_ms
+                    ORDER BY device_type, device_id, metric, ts, id
+                    """,
+                    {"raw_cutoff_ms": raw_cutoff_ms},
+                ).fetchall()
+
+                rollup_rows = self._build_metric_rollup_rows(raw_rows=raw_rows, rollup=policy.rollup)
+                if rollup_rows:
+                    conn.executemany(
+                        """
+                        INSERT OR REPLACE INTO metric_rollups (
+                            ts,
+                            resolution_seconds,
+                            device_type,
+                            device_id,
+                            metric,
+                            value,
+                            unit
+                        ) VALUES (
+                            :ts,
+                            :resolution_seconds,
+                            :device_type,
+                            :device_id,
+                            :metric,
+                            :value,
+                            :unit
+                        )
+                        """,
+                        rollup_rows,
+                    )
+
+                deleted_raw_cursor = conn.execute(
+                    """
+                    DELETE FROM metrics
+                    WHERE ts < :raw_cutoff_ms
+                    """,
+                    {"raw_cutoff_ms": raw_cutoff_ms},
+                )
+                deleted_raw_rows = (
+                    deleted_raw_cursor.rowcount if deleted_raw_cursor.rowcount is not None else 0
+                )
+                deleted_rollup_cursor = conn.execute(
+                    """
+                    DELETE FROM metric_rollups
+                    WHERE resolution_seconds = :resolution_seconds
+                      AND ts < :rollup_cutoff_ms
+                    """,
+                    {
+                        "resolution_seconds": policy.rollup.resolution_seconds,
+                        "rollup_cutoff_ms": rollup_cutoff_ms,
+                    },
+                )
+                deleted_rollup_rows = (
+                    deleted_rollup_cursor.rowcount if deleted_rollup_cursor.rowcount is not None else 0
+                )
+
+        rolled_up_rows = len(rollup_rows)
+        log_level = logging.INFO if (rolled_up_rows or deleted_raw_rows or deleted_rollup_rows) else logging.DEBUG
+        logger.log(
+            log_level,
+            "Metrics retention rolled up %s buckets, deleted %s raw rows, deleted %s expired rollups",
+            rolled_up_rows,
+            deleted_raw_rows,
+            deleted_rollup_rows,
+        )
+        return {
+            "rolled_up_rows": rolled_up_rows,
+            "deleted_raw_rows": deleted_raw_rows,
+            "deleted_rollup_rows": deleted_rollup_rows,
+        }
+
+    def _build_metric_rollup_rows(
+        self,
+        raw_rows: list[tuple[Any, ...]],
+        rollup: MetricRollupPolicy,
+    ) -> list[dict[str, Any]]:
+        if not raw_rows:
+            return []
+
+        bucket_ms = rollup.resolution_seconds * 1000
+        selected_rows: dict[tuple[int, str, str, str], tuple[int, int, str | None, float]] = {}
+        for row in raw_rows:
+            row_id = self._safe_int(row[0])
+            ts = self._safe_int(row[1])
+            device_type = str(row[2])
+            device_id = str(row[3])
+            metric = str(row[4])
+            value = self._safe_float(row[5])
+            unit = str(row[6]) if row[6] is not None else None
+            if row_id is None or ts is None or value is None:
+                continue
+
+            bucket_start_ts = (ts // bucket_ms) * bucket_ms
+            key = (bucket_start_ts, device_type, device_id, metric)
+            current = selected_rows.get(key)
+            if current is None:
+                selected_rows[key] = (ts, row_id, unit, value)
+                continue
+
+            current_ts, current_row_id, _current_unit, _current_value = current
+            if rollup.sample == "last":
+                if (ts, row_id) >= (current_ts, current_row_id):
+                    selected_rows[key] = (ts, row_id, unit, value)
+            elif rollup.sample == "first":
+                if (ts, row_id) <= (current_ts, current_row_id):
+                    selected_rows[key] = (ts, row_id, unit, value)
+
+        rollup_rows: list[dict[str, Any]] = []
+        for key in sorted(selected_rows):
+            bucket_start_ts, device_type, device_id, metric = key
+            _ts, _row_id, unit, value = selected_rows[key]
+            rollup_rows.append(
+                {
+                    "ts": bucket_start_ts,
+                    "resolution_seconds": rollup.resolution_seconds,
+                    "device_type": device_type,
+                    "device_id": device_id,
+                    "metric": metric,
+                    "value": value,
+                    "unit": unit,
+                }
+            )
+        return rollup_rows
 
     def _vacuum_database_if_needed(self) -> bool:
         result = self.run_database_vacuum(force=False)
@@ -1528,6 +1902,57 @@ class DevicePoller:
                 "labels": "TEXT",
                 "component": "TEXT",
             },
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS metric_rollups (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ts INTEGER NOT NULL,
+                resolution_seconds INTEGER NOT NULL,
+                device_type TEXT NOT NULL,
+                device_id TEXT NOT NULL,
+                metric TEXT NOT NULL,
+                value REAL NOT NULL,
+                unit TEXT
+            )
+            """
+        )
+        self._ensure_columns(
+            conn,
+            table_name="metric_rollups",
+            expected_columns={
+                "ts": "INTEGER NOT NULL",
+                "resolution_seconds": "INTEGER NOT NULL",
+                "device_type": "TEXT NOT NULL",
+                "device_id": "TEXT NOT NULL",
+                "metric": "TEXT NOT NULL",
+                "value": "REAL NOT NULL",
+                "unit": "TEXT",
+            },
+        )
+        conn.execute(
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_metric_rollups_unique_bucket
+            ON metric_rollups (resolution_seconds, device_type, device_id, metric, ts)
+            """
+        )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_metric_rollups_device_metric_ts
+            ON metric_rollups (device_id, metric, ts)
+            """
+        )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_metric_rollups_type_device_metric_ts
+            ON metric_rollups (device_type, device_id, metric, ts)
+            """
+        )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_metric_rollups_resolution_ts
+            ON metric_rollups (resolution_seconds, ts)
+            """
         )
         conn.execute(
             """

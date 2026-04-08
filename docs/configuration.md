@@ -62,6 +62,14 @@ database:
       enabled: true
       retention_seconds: 86400
       interval_seconds: 3600
+    metrics:
+      enabled: true
+      interval_seconds: 3600
+      raw_retention_seconds: 604800
+      rollups:
+        - resolution_seconds: 600
+          retention_seconds: 15552000
+          sample: last
   maintenance:
     vacuum:
       enabled: false
@@ -212,6 +220,7 @@ Common conventions:
 Currently supported retention targets:
 
 - `retention.raw_events`
+- `retention.metrics`
 
 Currently supported maintenance tasks:
 
@@ -223,11 +232,29 @@ Currently supported maintenance tasks:
 - `retention_seconds` — keep only rows newer than this age.
 - `interval_seconds` — run retention on this schedule.
 
+`retention.metrics` fields:
+
+- `enabled` — optional boolean, default `true` when the block exists.
+- `interval_seconds` — run the metrics compaction job on this schedule.
+- `raw_retention_seconds` — keep raw rows in `metrics` only within this age window.
+- `rollups` — list of retained rollup levels. Today the app uses only the first valid entry.
+
+Each `rollups` entry contains:
+
+- `resolution_seconds` — bucket width for compacted points.
+- `retention_seconds` — keep rollup rows newer than this age.
+- `sample` — representative point to keep from each bucket. Supported values: `last`, `first`, `any`.
+
 Current behavior:
 
 - `raw_events` retention runs once on startup and then repeats every `interval_seconds`.
 - Rows are deleted when `raw_events.ts < now - retention_seconds`.
-- Metrics and derived tables are not processed yet; only `raw_events` retention is supported for now.
+- `metrics` retention runs once on startup and then repeats every `interval_seconds`.
+- Raw metric rows older than `raw_retention_seconds` are compacted into `metric_rollups`.
+- The app stores one representative point per `device_type`, `device_id`, `metric`, and rollup bucket.
+- After a bucket is written to `metric_rollups`, covered raw rows are deleted from `metrics`.
+- Expired rollup rows are deleted when `metric_rollups.ts < now - rollup.retention_seconds`.
+- Metric reads merge recent raw rows from `metrics` with older compacted rows from `metric_rollups`.
 
 `maintenance.vacuum` fields:
 
