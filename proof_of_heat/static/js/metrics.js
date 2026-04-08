@@ -394,7 +394,7 @@ async function loadChart() {
 
     if (chart) chart.destroy();
     const datasets = metricSeries.map((seriesData, index) => {
-        const gapMs = 10 * 60 * 1000;
+        const gapMs = 12 * 60 * 1000;
         const series = [];
         seriesData.points.forEach((point, pointIndex) => {
             const ts = point.ts;
