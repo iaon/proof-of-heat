@@ -65,6 +65,8 @@ class DummyDevicePoller:
     latest_control_inputs = None
     latest_control_decision = None
     recorded_control_decisions = []
+    vacuum_status = {}
+    vacuum_runs = []
     metric_catalog = {}
     economics_metadata = {
         "enabled": True,
@@ -122,6 +124,16 @@ class DummyDevicePoller:
         self.recorded_control_decisions.append(decision)
         self.latest_control_decision = decision
 
+    def get_database_vacuum_status(self):
+        return self.vacuum_status.copy()
+
+    def run_database_vacuum(self, force=False):
+        self.vacuum_runs.append(force)
+        response = self.vacuum_status.copy()
+        response["force"] = force
+        response["vacuumed"] = force
+        return response
+
 
 def build_routes(tmp_path, monkeypatch, parsed_settings=None, latest_payloads=None):
     app = build_test_app(
@@ -147,6 +159,8 @@ def build_test_app(tmp_path, monkeypatch, parsed_settings=None, latest_payloads=
     DummyDevicePoller.latest_control_inputs = None
     DummyDevicePoller.latest_control_decision = None
     DummyDevicePoller.recorded_control_decisions = []
+    DummyDevicePoller.vacuum_status = {}
+    DummyDevicePoller.vacuum_runs = []
     DummyDevicePoller.metric_catalog = {}
     DummyDevicePoller.economics_metadata = {
         "enabled": True,
@@ -409,6 +423,41 @@ def test_control_decisions_api_returns_latest_payload(tmp_path, monkeypatch):
     assert payload["data"] is not None
     assert payload["data"]["mode"] == "room_target"
     assert payload["data"]["resolved_target_supply_temp_c"] == 42.5
+
+
+def test_database_vacuum_api_returns_status_and_supports_force_run(tmp_path, monkeypatch):
+    routes = build_routes(tmp_path, monkeypatch)
+    DummyDevicePoller.vacuum_status = {
+        "configured": True,
+        "enabled": False,
+        "policy": {
+            "enabled": False,
+            "interval_seconds": 86400,
+            "min_free_ratio": 0.25,
+            "min_reclaimable_mb": 64.0,
+        },
+        "stats": {
+            "page_count": 128,
+            "freelist_count": 40,
+            "page_size": 4096,
+            "database_size_bytes": 524288,
+            "reclaimable_bytes": 163840,
+            "reclaimable_mb": 0.15625,
+            "free_ratio": 0.3125,
+        },
+        "should_vacuum": False,
+        "reason": "below_min_reclaimable_mb",
+    }
+
+    status_payload = routes["/api/database/vacuum"]()
+    run_payload = routes["POST /api/database/vacuum"]({"force": True})
+
+    assert status_payload["configured"] is True
+    assert status_payload["policy"]["min_reclaimable_mb"] == 64.0
+    assert status_payload["stats"]["free_ratio"] == 0.3125
+    assert run_payload["force"] is True
+    assert run_payload["vacuumed"] is True
+    assert DummyDevicePoller.vacuum_runs == [True]
 
 
 def test_metrics_catalog_api_returns_catalog(tmp_path, monkeypatch):

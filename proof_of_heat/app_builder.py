@@ -446,6 +446,20 @@ def create_app(
         )
         return {"points": points}
 
+    @app.get("/api/database/vacuum")
+    @app.get("/api/database/vacuum/")
+    def get_database_vacuum_status() -> dict[str, Any]:
+        return device_poller.get_database_vacuum_status()
+
+    @app.post("/api/database/vacuum")
+    @app.post("/api/database/vacuum/")
+    def run_database_vacuum(payload: dict[str, Any] | None = None) -> dict[str, Any]:
+        if payload is None:
+            payload = {}
+        if not isinstance(payload, dict):
+            raise deps.http_exception_cls(status_code=400, detail="payload must be a JSON object")
+        return device_poller.run_database_vacuum(force=bool(payload.get("force")))
+
     @app.get("/status")
     def status() -> dict[str, Any]:
         miner_status = miner.fetch_status()

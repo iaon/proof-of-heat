@@ -47,6 +47,28 @@ class ResolvedControlInput:
     sources: list[str] | None = None
 
 
+@dataclass(frozen=True)
+class RawEventsRetentionPolicy:
+    retention_seconds: int
+    interval_seconds: int
+
+
+@dataclass(frozen=True)
+class DatabaseVacuumPolicy:
+    enabled: bool
+    interval_seconds: int
+    min_free_ratio: float
+    min_reclaimable_mb: float
+
+
+@dataclass(frozen=True)
+class MaintenanceJob:
+    job_id: str
+    interval_seconds: int
+    handler: Callable[[], Any]
+    run_on_start: bool = False
+
+
 class DevicePoller:
     def __init__(self, settings: dict[str, Any], data_dir: Path | None = None) -> None:
         self._settings = settings
@@ -71,6 +93,7 @@ class DevicePoller:
 
         default_interval = int(devices.get("refresh_interval", 30) or 30)
         poll_jobs: list[tuple[DeviceKey, dict[str, Any], Callable[..., dict[str, Any]]]] = []
+        maintenance_jobs: list[MaintenanceJob] = []
         seen_weather_device_ids: set[int] = set()
 
         for device in devices.get("zont", []) or []:
@@ -111,11 +134,32 @@ class DevicePoller:
                 )
             )
 
-        if not poll_jobs:
-            logger.info("No devices or economics polling configured")
+        raw_events_retention = self._load_raw_events_retention_policy()
+        if raw_events_retention is not None:
+            maintenance_jobs.append(
+                MaintenanceJob(
+                    job_id="retention-raw-events",
+                    interval_seconds=raw_events_retention.interval_seconds,
+                    handler=self._apply_raw_events_retention,
+                    run_on_start=True,
+                )
+            )
+
+        database_vacuum = self._load_database_vacuum_policy()
+        if database_vacuum is not None and database_vacuum.enabled:
+            maintenance_jobs.append(
+                MaintenanceJob(
+                    job_id="maintenance-vacuum",
+                    interval_seconds=database_vacuum.interval_seconds,
+                    handler=self._vacuum_database_if_needed,
+                )
+            )
+
+        if not poll_jobs and not maintenance_jobs:
+            logger.info("No devices, economics polling, or database maintenance configured")
             return
 
-        executor = ThreadPoolExecutor(max_workers=max(1, len(poll_jobs)))
+        executor = ThreadPoolExecutor(max_workers=max(1, len(poll_jobs) + len(maintenance_jobs)))
         self._scheduler = BackgroundScheduler(executors={"default": executor})
 
         for key, device, handler in poll_jobs:
@@ -141,9 +185,31 @@ class DevicePoller:
                 interval,
             )
 
+        for job in maintenance_jobs:
+            trigger = IntervalTrigger(seconds=job.interval_seconds)
+            self._scheduler.add_job(
+                job.handler,
+                trigger=trigger,
+                id=job.job_id,
+                name=f"Maintenance {job.job_id}",
+                replace_existing=True,
+            )
+            logger.info(
+                "Scheduled maintenance job %s (%s seconds)",
+                job.job_id,
+                job.interval_seconds,
+            )
+
         self._scheduler.start()
         for key, device, handler in poll_jobs:
             self._poll_device(key, device, handler)
+        for job in maintenance_jobs:
+            if not job.run_on_start:
+                continue
+            try:
+                job.handler()
+            except Exception:  # pragma: no cover - defensive logging
+                logger.exception("Maintenance job failed during initial run: %s", job.job_id)
 
     def shutdown(self) -> None:
         if self._scheduler:
@@ -895,6 +961,243 @@ class DevicePoller:
                 )
                 self._refresh_control_inputs(conn=conn, ts_ms=ts_ms)
 
+    def _load_raw_events_retention_policy(self) -> RawEventsRetentionPolicy | None:
+        if not self._db_path or not isinstance(self._settings, dict):
+            return None
+
+        database = self._settings.get("database")
+        if not isinstance(database, dict):
+            return None
+        retention = database.get("retention")
+        if not isinstance(retention, dict):
+            return None
+        raw_events = retention.get("raw_events")
+        if not isinstance(raw_events, dict):
+            return None
+        if raw_events.get("enabled") is False:
+            return None
+
+        retention_seconds = self._safe_int(raw_events.get("retention_seconds"))
+        interval_seconds = self._safe_int(raw_events.get("interval_seconds"))
+        if retention_seconds is None or retention_seconds <= 0:
+            logger.warning("Skipping raw_events retention due to invalid retention_seconds: %r", raw_events)
+            return None
+        if interval_seconds is None or interval_seconds <= 0:
+            logger.warning("Skipping raw_events retention due to invalid interval_seconds: %r", raw_events)
+            return None
+        return RawEventsRetentionPolicy(
+            retention_seconds=retention_seconds,
+            interval_seconds=interval_seconds,
+        )
+
+    def _load_database_vacuum_policy(self) -> DatabaseVacuumPolicy | None:
+        if not self._db_path or not isinstance(self._settings, dict):
+            return None
+
+        database = self._settings.get("database")
+        if not isinstance(database, dict):
+            return None
+        maintenance = database.get("maintenance")
+        if not isinstance(maintenance, dict):
+            return None
+        vacuum = maintenance.get("vacuum")
+        if not isinstance(vacuum, dict):
+            return None
+        enabled = vacuum.get("enabled") is not False
+
+        interval_seconds = self._safe_int(vacuum.get("interval_seconds"))
+        if interval_seconds is None or interval_seconds <= 0:
+            logger.warning("Skipping database vacuum due to invalid interval_seconds: %r", vacuum)
+            return None
+
+        min_free_ratio = self._safe_float(vacuum.get("min_free_ratio"))
+        if min_free_ratio is None:
+            min_free_ratio = 0.25
+        if min_free_ratio < 0 or min_free_ratio > 1:
+            logger.warning("Skipping database vacuum due to invalid min_free_ratio: %r", vacuum)
+            return None
+
+        min_reclaimable_mb = self._safe_float(vacuum.get("min_reclaimable_mb"))
+        if min_reclaimable_mb is None:
+            min_reclaimable_mb = 64.0
+        if min_reclaimable_mb < 0:
+            logger.warning("Skipping database vacuum due to invalid min_reclaimable_mb: %r", vacuum)
+            return None
+
+        return DatabaseVacuumPolicy(
+            enabled=enabled,
+            interval_seconds=interval_seconds,
+            min_free_ratio=min_free_ratio,
+            min_reclaimable_mb=min_reclaimable_mb,
+        )
+
+    def _apply_raw_events_retention(self, reference_ts_ms: int | None = None) -> int:
+        policy = self._load_raw_events_retention_policy()
+        if policy is None or not self._db_path:
+            return 0
+
+        now_ms = reference_ts_ms
+        if now_ms is None:
+            now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+        cutoff_ms = now_ms - (policy.retention_seconds * 1000)
+
+        with self._db_lock:
+            with sqlite3.connect(self._db_path) as conn:
+                self._ensure_schema(conn)
+                cursor = conn.execute(
+                    """
+                    DELETE FROM raw_events
+                    WHERE ts < :cutoff_ms
+                    """,
+                    {"cutoff_ms": cutoff_ms},
+                )
+                deleted_rows = cursor.rowcount if cursor.rowcount is not None else 0
+
+        log_level = logging.INFO if deleted_rows else logging.DEBUG
+        logger.log(
+            log_level,
+            "Raw events retention removed %s rows older than %s seconds",
+            deleted_rows,
+            policy.retention_seconds,
+        )
+        return deleted_rows
+
+    def _vacuum_database_if_needed(self) -> bool:
+        result = self.run_database_vacuum(force=False)
+        return bool(result.get("vacuumed"))
+
+    def _collect_database_vacuum_stats(self, conn: sqlite3.Connection) -> dict[str, Any]:
+        page_count_row = conn.execute("PRAGMA page_count").fetchone()
+        freelist_count_row = conn.execute("PRAGMA freelist_count").fetchone()
+        page_size_row = conn.execute("PRAGMA page_size").fetchone()
+
+        page_count = self._safe_int(page_count_row[0] if page_count_row else None) or 0
+        freelist_count = self._safe_int(freelist_count_row[0] if freelist_count_row else None) or 0
+        page_size = self._safe_int(page_size_row[0] if page_size_row else None) or 0
+        database_size_bytes = page_count * page_size
+        reclaimable_bytes = freelist_count * page_size
+        reclaimable_mb = reclaimable_bytes / (1024 * 1024) if reclaimable_bytes > 0 else 0.0
+        free_ratio = (freelist_count / page_count) if page_count > 0 else 0.0
+        return {
+            "page_count": page_count,
+            "freelist_count": freelist_count,
+            "page_size": page_size,
+            "database_size_bytes": database_size_bytes,
+            "reclaimable_bytes": reclaimable_bytes,
+            "reclaimable_mb": reclaimable_mb,
+            "free_ratio": free_ratio,
+        }
+
+    def _evaluate_database_vacuum(
+        self,
+        stats: dict[str, Any],
+        policy: DatabaseVacuumPolicy | None,
+        *,
+        force: bool,
+    ) -> tuple[bool, str]:
+        if force:
+            return True, "forced"
+        if policy is None:
+            return False, "not_configured"
+        if stats["freelist_count"] <= 0 or stats["reclaimable_bytes"] <= 0:
+            return False, "no_free_pages"
+        if stats["free_ratio"] < policy.min_free_ratio:
+            return False, "below_min_free_ratio"
+        if stats["reclaimable_mb"] < policy.min_reclaimable_mb:
+            return False, "below_min_reclaimable_mb"
+        return True, "eligible"
+
+    def _serialize_database_vacuum_policy(
+        self,
+        policy: DatabaseVacuumPolicy | None,
+    ) -> dict[str, Any] | None:
+        if policy is None:
+            return None
+        return {
+            "enabled": policy.enabled,
+            "interval_seconds": policy.interval_seconds,
+            "min_free_ratio": policy.min_free_ratio,
+            "min_reclaimable_mb": policy.min_reclaimable_mb,
+        }
+
+    def get_database_vacuum_status(self) -> dict[str, Any]:
+        if not self._db_path:
+            return {
+                "configured": False,
+                "enabled": False,
+                "policy": None,
+                "stats": None,
+                "should_vacuum": False,
+                "reason": "database_unavailable",
+            }
+
+        policy = self._load_database_vacuum_policy()
+        with self._db_lock:
+            with sqlite3.connect(self._db_path) as conn:
+                self._ensure_schema(conn)
+                stats = self._collect_database_vacuum_stats(conn)
+
+        should_vacuum, reason = self._evaluate_database_vacuum(
+            stats=stats,
+            policy=policy,
+            force=False,
+        )
+        return {
+            "configured": policy is not None,
+            "enabled": bool(policy.enabled) if policy is not None else False,
+            "policy": self._serialize_database_vacuum_policy(policy),
+            "stats": stats,
+            "should_vacuum": should_vacuum,
+            "reason": reason,
+        }
+
+    def run_database_vacuum(self, force: bool = False) -> dict[str, Any]:
+        if not self._db_path:
+            return {
+                "configured": False,
+                "enabled": False,
+                "policy": None,
+                "force": force,
+                "vacuumed": False,
+                "before": None,
+                "after": None,
+                "reason": "database_unavailable",
+            }
+
+        policy = self._load_database_vacuum_policy()
+        with self._db_lock:
+            with sqlite3.connect(self._db_path, isolation_level=None) as conn:
+                self._ensure_schema(conn)
+                before = self._collect_database_vacuum_stats(conn)
+                should_vacuum, reason = self._evaluate_database_vacuum(
+                    stats=before,
+                    policy=policy,
+                    force=force,
+                )
+                vacuumed = False
+                if should_vacuum:
+                    logger.info(
+                        "Running database vacuum with free_ratio %.4f and about %.2f reclaimable MiB",
+                        before["free_ratio"],
+                        before["reclaimable_mb"],
+                    )
+                    conn.execute("VACUUM")
+                    vacuumed = True
+                else:
+                    logger.debug("Skipping database vacuum: %s", reason)
+                after = self._collect_database_vacuum_stats(conn)
+
+        return {
+            "configured": policy is not None,
+            "enabled": bool(policy.enabled) if policy is not None else False,
+            "policy": self._serialize_database_vacuum_policy(policy),
+            "force": force,
+            "vacuumed": vacuumed,
+            "before": before,
+            "after": after,
+            "reason": reason,
+        }
+
     def _refresh_control_inputs(self, conn: sqlite3.Connection, ts_ms: int) -> None:
         control_inputs = self._settings.get("control_inputs") if isinstance(self._settings, dict) else None
         if not isinstance(control_inputs, dict):
@@ -1161,6 +1464,12 @@ class DevicePoller:
             """
             CREATE INDEX IF NOT EXISTS idx_raw_events_type_ts
             ON raw_events (device_type, ts)
+            """
+        )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_raw_events_ts
+            ON raw_events (ts)
             """
         )
         self._ensure_columns(

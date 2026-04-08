@@ -785,6 +785,56 @@ def test_control_decisions_are_persisted_and_written_to_metrics(tmp_path):
     assert row == (1_234, "room_target", 20.0, 41.5, 72.0, None, "cold_start")
 
 
+def test_raw_events_retention_deletes_rows_older_than_retention(tmp_path):
+    settings = {
+        "database": {
+            "retention": {
+                "raw_events": {
+                    "enabled": True,
+                    "retention_seconds": 86_400,
+                    "interval_seconds": 3_600,
+                }
+            }
+        }
+    }
+
+    poller = DevicePoller(settings, data_dir=tmp_path)
+    db_path = tmp_path / "telemetry.sqlite3"
+    reference_ts_ms = 100_000_000
+    cutoff_ts_ms = reference_ts_ms - 86_400_000
+
+    with sqlite3.connect(db_path) as conn:
+        poller._ensure_tables(conn)
+        conn.executemany(
+            """
+            INSERT INTO raw_events (ts, device_type, device_id, payload)
+            VALUES (?, ?, ?, ?)
+            """,
+            [
+                (cutoff_ts_ms - 1, "legacy", "too-old", "{}"),
+                (cutoff_ts_ms, "legacy", "boundary", "{}"),
+                (reference_ts_ms, "legacy", "fresh", "{}"),
+            ],
+        )
+
+    deleted_rows = poller._apply_raw_events_retention(reference_ts_ms=reference_ts_ms)
+
+    with sqlite3.connect(db_path) as conn:
+        remaining_ids = [
+            row[0]
+            for row in conn.execute(
+                """
+                SELECT device_id
+                FROM raw_events
+                ORDER BY ts
+                """
+            ).fetchall()
+        ]
+
+    assert deleted_rows == 1
+    assert remaining_ids == ["boundary", "fresh"]
+
+
 def test_zont_refresh_interval_180_is_valid(monkeypatch, tmp_path):
     settings = {
         "devices": {
@@ -809,6 +859,286 @@ def test_zont_refresh_interval_180_is_valid(monkeypatch, tmp_path):
         assert "interval[0:03:00]" in str(jobs[0].trigger)
     finally:
         poller.shutdown()
+
+
+def test_raw_events_retention_job_is_scheduled_and_runs_on_start(tmp_path):
+    settings = {
+        "database": {
+            "retention": {
+                "raw_events": {
+                    "enabled": True,
+                    "retention_seconds": 86_400,
+                    "interval_seconds": 3_600,
+                }
+            }
+        }
+    }
+
+    poller = DevicePoller(settings, data_dir=tmp_path)
+    db_path = tmp_path / "telemetry.sqlite3"
+    now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+
+    with sqlite3.connect(db_path) as conn:
+        poller._ensure_tables(conn)
+        conn.executemany(
+            """
+            INSERT INTO raw_events (ts, device_type, device_id, payload)
+            VALUES (?, ?, ?, ?)
+            """,
+            [
+                (now_ms - 86_500_000, "legacy", "old", "{}"),
+                (now_ms - 1_000, "legacy", "recent", "{}"),
+            ],
+        )
+
+    poller.start()
+    try:
+        assert poller._scheduler is not None
+        jobs = poller._scheduler.get_jobs()
+        assert len(jobs) == 1
+        assert jobs[0].id == "retention-raw-events"
+        assert "interval[1:00:00]" in str(jobs[0].trigger)
+
+        with sqlite3.connect(db_path) as conn:
+            remaining_ids = [
+                row[0]
+                for row in conn.execute(
+                    """
+                    SELECT device_id
+                    FROM raw_events
+                    ORDER BY ts
+                    """
+                ).fetchall()
+            ]
+    finally:
+        poller.shutdown()
+
+    assert remaining_ids == ["recent"]
+
+
+def test_database_vacuum_job_is_scheduled_without_startup_run(monkeypatch, tmp_path):
+    settings = {
+        "database": {
+            "maintenance": {
+                "vacuum": {
+                    "enabled": True,
+                    "interval_seconds": 86_400,
+                    "min_free_ratio": 0.25,
+                    "min_reclaimable_mb": 64.0,
+                }
+            }
+        }
+    }
+
+    calls = []
+
+    def fake_vacuum(self):
+        calls.append(True)
+        return True
+
+    monkeypatch.setattr(DevicePoller, "_vacuum_database_if_needed", fake_vacuum)
+
+    poller = DevicePoller(settings, data_dir=tmp_path)
+    poller.start()
+    try:
+        assert poller._scheduler is not None
+        jobs = poller._scheduler.get_jobs()
+        assert len(jobs) == 1
+        assert jobs[0].id == "maintenance-vacuum"
+        assert "interval[1 day, 0:00:00]" in str(jobs[0].trigger)
+        assert calls == []
+    finally:
+        poller.shutdown()
+
+
+def test_database_vacuum_runs_when_free_ratio_exceeds_threshold(tmp_path):
+    settings = {
+        "database": {
+            "maintenance": {
+                "vacuum": {
+                    "enabled": True,
+                    "interval_seconds": 86_400,
+                    "min_free_ratio": 0.01,
+                    "min_reclaimable_mb": 0.0,
+                }
+            }
+        }
+    }
+
+    poller = DevicePoller(settings, data_dir=tmp_path)
+    db_path = tmp_path / "telemetry.sqlite3"
+    large_payload = json.dumps({"payload": "x" * 4096})
+
+    with sqlite3.connect(db_path) as conn:
+        poller._ensure_tables(conn)
+        conn.executemany(
+            """
+            INSERT INTO raw_events (ts, device_type, device_id, payload)
+            VALUES (?, ?, ?, ?)
+            """,
+            [
+                (idx, "bulk", str(idx), large_payload)
+                for idx in range(256)
+            ],
+        )
+        conn.execute("DELETE FROM raw_events")
+        before_page_count = conn.execute("PRAGMA page_count").fetchone()[0]
+        before_freelist_count = conn.execute("PRAGMA freelist_count").fetchone()[0]
+
+    assert before_page_count > 0
+    assert before_freelist_count > 0
+
+    vacuumed = poller._vacuum_database_if_needed()
+
+    with sqlite3.connect(db_path) as conn:
+        after_page_count = conn.execute("PRAGMA page_count").fetchone()[0]
+        after_freelist_count = conn.execute("PRAGMA freelist_count").fetchone()[0]
+
+    assert vacuumed is True
+    assert after_freelist_count == 0
+    assert after_page_count < before_page_count
+
+
+def test_database_vacuum_skips_when_free_ratio_is_below_threshold(tmp_path):
+    settings = {
+        "database": {
+            "maintenance": {
+                "vacuum": {
+                    "enabled": True,
+                    "interval_seconds": 86_400,
+                    "min_free_ratio": 0.95,
+                    "min_reclaimable_mb": 0.0,
+                }
+            }
+        }
+    }
+
+    poller = DevicePoller(settings, data_dir=tmp_path)
+    db_path = tmp_path / "telemetry.sqlite3"
+    large_payload = json.dumps({"payload": "x" * 4096})
+
+    with sqlite3.connect(db_path) as conn:
+        poller._ensure_tables(conn)
+        conn.executemany(
+            """
+            INSERT INTO raw_events (ts, device_type, device_id, payload)
+            VALUES (?, ?, ?, ?)
+            """,
+            [
+                (idx, "bulk", str(idx), large_payload)
+                for idx in range(128)
+            ],
+        )
+        conn.execute("DELETE FROM raw_events WHERE id % 4 = 0")
+        before_page_count = conn.execute("PRAGMA page_count").fetchone()[0]
+        before_freelist_count = conn.execute("PRAGMA freelist_count").fetchone()[0]
+
+    assert before_page_count > 0
+
+    vacuumed = poller._vacuum_database_if_needed()
+
+    with sqlite3.connect(db_path) as conn:
+        after_page_count = conn.execute("PRAGMA page_count").fetchone()[0]
+        after_freelist_count = conn.execute("PRAGMA freelist_count").fetchone()[0]
+
+    assert vacuumed is False
+    assert after_page_count == before_page_count
+    assert after_freelist_count == before_freelist_count
+
+
+def test_database_vacuum_skips_when_reclaimable_mb_is_below_threshold(tmp_path):
+    settings = {
+        "database": {
+            "maintenance": {
+                "vacuum": {
+                    "enabled": True,
+                    "interval_seconds": 86_400,
+                    "min_free_ratio": 0.01,
+                    "min_reclaimable_mb": 1024.0,
+                }
+            }
+        }
+    }
+
+    poller = DevicePoller(settings, data_dir=tmp_path)
+    db_path = tmp_path / "telemetry.sqlite3"
+    large_payload = json.dumps({"payload": "x" * 4096})
+
+    with sqlite3.connect(db_path) as conn:
+        poller._ensure_tables(conn)
+        conn.executemany(
+            """
+            INSERT INTO raw_events (ts, device_type, device_id, payload)
+            VALUES (?, ?, ?, ?)
+            """,
+            [
+                (idx, "bulk", str(idx), large_payload)
+                for idx in range(128)
+            ],
+        )
+        conn.execute("DELETE FROM raw_events")
+        before_page_count = conn.execute("PRAGMA page_count").fetchone()[0]
+        before_freelist_count = conn.execute("PRAGMA freelist_count").fetchone()[0]
+
+    vacuumed = poller._vacuum_database_if_needed()
+    status = poller.get_database_vacuum_status()
+
+    with sqlite3.connect(db_path) as conn:
+        after_page_count = conn.execute("PRAGMA page_count").fetchone()[0]
+        after_freelist_count = conn.execute("PRAGMA freelist_count").fetchone()[0]
+
+    assert vacuumed is False
+    assert status["reason"] == "below_min_reclaimable_mb"
+    assert status["stats"]["reclaimable_mb"] < 1024.0
+    assert after_page_count == before_page_count
+    assert after_freelist_count == before_freelist_count
+
+
+def test_database_vacuum_force_runs_even_when_thresholds_are_not_met(tmp_path):
+    settings = {
+        "database": {
+            "maintenance": {
+                "vacuum": {
+                    "enabled": False,
+                    "interval_seconds": 86_400,
+                    "min_free_ratio": 0.95,
+                    "min_reclaimable_mb": 1024.0,
+                }
+            }
+        }
+    }
+
+    poller = DevicePoller(settings, data_dir=tmp_path)
+    db_path = tmp_path / "telemetry.sqlite3"
+    large_payload = json.dumps({"payload": "x" * 4096})
+
+    with sqlite3.connect(db_path) as conn:
+        poller._ensure_tables(conn)
+        conn.executemany(
+            """
+            INSERT INTO raw_events (ts, device_type, device_id, payload)
+            VALUES (?, ?, ?, ?)
+            """,
+            [
+                (idx, "bulk", str(idx), large_payload)
+                for idx in range(128)
+            ],
+        )
+        conn.execute("DELETE FROM raw_events")
+        before_freelist_count = conn.execute("PRAGMA freelist_count").fetchone()[0]
+
+    result = poller.run_database_vacuum(force=True)
+
+    with sqlite3.connect(db_path) as conn:
+        after_freelist_count = conn.execute("PRAGMA freelist_count").fetchone()[0]
+
+    assert before_freelist_count > 0
+    assert result["configured"] is True
+    assert result["enabled"] is False
+    assert result["force"] is True
+    assert result["vacuumed"] is True
+    assert result["reason"] == "forced"
+    assert after_freelist_count == 0
 
 
 def test_economics_metrics_are_computed_and_persisted(monkeypatch, tmp_path):

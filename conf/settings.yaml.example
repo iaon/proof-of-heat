@@ -31,6 +31,19 @@ devices:
       port: 1111
       max_power: null
       min_power: 1000
+
+database:
+  retention:
+    raw_events:
+      enabled: true
+      retention_seconds: 86400
+      interval_seconds: 3600
+  maintenance:
+    vacuum:
+      enabled: false
+      interval_seconds: 86400
+      min_free_ratio: 0.25
+      min_reclaimable_mb: 64.0
 control_inputs:
   max_age_seconds: 180
   indoor_temp:

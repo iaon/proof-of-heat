@@ -85,6 +85,28 @@ def test_default_settings_yaml_includes_heating_mode():
     }
 
 
+def test_default_settings_yaml_includes_database_maintenance_settings():
+    parsed = parse_settings_yaml(DEFAULT_SETTINGS_YAML)
+
+    assert parsed["database"] == {
+        "retention": {
+            "raw_events": {
+                "enabled": True,
+                "retention_seconds": 86400,
+                "interval_seconds": 3600,
+            }
+        },
+        "maintenance": {
+            "vacuum": {
+                "enabled": False,
+                "interval_seconds": 86400,
+                "min_free_ratio": 0.25,
+                "min_reclaimable_mb": 64.0,
+            }
+        },
+    }
+
+
 def test_default_settings_yaml_includes_economics():
     parsed = parse_settings_yaml(DEFAULT_SETTINGS_YAML)
 

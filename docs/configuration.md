@@ -7,6 +7,7 @@ The file is a plain YAML mapping with these top-level sections:
 - `location` — coordinates and timezone used by weather integrations.
 - `integrations` — shared credentials for external APIs.
 - `devices` — polled devices and polling intervals.
+- `database` — SQLite retention and future database-processing settings.
 - `control_inputs` — normalized signals used for heating control.
 - `heating_mode` — active heating control strategy and its parameters.
 - `heating_curve` — heating curve parameters and boost rules.
@@ -54,6 +55,19 @@ devices:
       port: 1111
       max_power: null
       min_power: 1000
+
+database:
+  retention:
+    raw_events:
+      enabled: true
+      retention_seconds: 86400
+      interval_seconds: 3600
+  maintenance:
+    vacuum:
+      enabled: false
+      interval_seconds: 86400
+      min_free_ratio: 0.25
+      min_reclaimable_mb: 64.0
 
 control_inputs:
   max_age_seconds: 180
@@ -190,6 +204,44 @@ Common conventions:
 - ZONT devices can override polling interval with `refresh_interval`.
 - WhatsMiner devices may define `max_power` in watts. This is an optional upper bound reserved for future control logic; it is currently stored in config and passed into the plugin, but not enforced yet.
 - WhatsMiner devices may define `min_power` in watts. This is the minimum stable operating power; future control logic can treat lower requested power as a stop condition.
+
+### `database`
+
+`database` configures retention for data stored in SQLite and leaves room for future database workflows such as aggregation.
+
+Currently supported retention targets:
+
+- `retention.raw_events`
+
+Currently supported maintenance tasks:
+
+- `maintenance.vacuum`
+
+`retention.raw_events` fields:
+
+- `enabled` — optional boolean, default `true` when the block exists.
+- `retention_seconds` — keep only rows newer than this age.
+- `interval_seconds` — run retention on this schedule.
+
+Current behavior:
+
+- `raw_events` retention runs once on startup and then repeats every `interval_seconds`.
+- Rows are deleted when `raw_events.ts < now - retention_seconds`.
+- Metrics and derived tables are not processed yet; only `raw_events` retention is supported for now.
+
+`maintenance.vacuum` fields:
+
+- `enabled` — optional boolean, default `true` when the block exists.
+- `interval_seconds` — run the vacuum check on this schedule.
+- `min_free_ratio` — minimum `freelist_count / page_count` ratio required before `VACUUM` runs. Values must be between `0` and `1`.
+- `min_reclaimable_mb` — minimum reclaimable space in MiB required before `VACUUM` runs. Values must be `>= 0`.
+
+Current behavior:
+
+- `VACUUM` does not run on startup; it only runs on its own schedule.
+- Before running `VACUUM`, the app checks SQLite `PRAGMA page_count` and `PRAGMA freelist_count`.
+- `VACUUM` runs only when the free-page ratio is at least `min_free_ratio` and reclaimable space is at least `min_reclaimable_mb`.
+- A conservative starting point is `interval_seconds: 86400`, `min_free_ratio: 0.25`, and `min_reclaimable_mb: 64.0`.
 
 ### `control_inputs`
 
