@@ -55,6 +55,12 @@
 - Periodic device polling runs through APScheduler and writes telemetry snapshots and metrics into SQLite.
 - UI is lightweight and served from the backend (`/` and `/config`) for quick local control.
 
+## Change Proposal Workflow
+- Before implementing a non-trivial change, the AI must first provide a short architectural description of the proposed solution.
+- The AI must explicitly describe any proposed configuration changes, especially edits to `conf/settings.yaml` and related config files. If no config changes are needed, it should say so.
+- After presenting the architecture and configuration proposal, the AI must wait for explicit user confirmation.
+- The AI may proceed with implementation only after a positive user response.
+
 ## Session Notes Files
 
 If the user asks to read, write, update, export, or save a session notes file, use a Markdown file in:
