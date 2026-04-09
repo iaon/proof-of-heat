@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from proof_of_heat.services import device_polling
 from proof_of_heat.services import economic_polling
 from proof_of_heat.services.device_polling import DevicePoller
+from proof_of_heat.services.metrics import MetricSample
 
 
 def test_open_meteo_virtual_device_metrics_are_persisted(monkeypatch, tmp_path):
@@ -971,6 +972,61 @@ def test_metrics_retention_deletes_expired_rollup_rows(tmp_path):
     assert remaining_rollups == [(rollup_cutoff_ms, 2.0)]
 
 
+def test_metric_catalog_cache_is_refreshed_after_rollup_expiration(tmp_path):
+    settings = {
+        "database": {
+            "retention": {
+                "metrics": {
+                    "enabled": True,
+                    "interval_seconds": 3_600,
+                    "raw_retention_seconds": 604_800,
+                    "rollups": [
+                        {
+                            "resolution_seconds": 600,
+                            "retention_seconds": 15_552_000,
+                            "sample": "last",
+                        }
+                    ],
+                }
+            }
+        }
+    }
+
+    poller = DevicePoller(settings, data_dir=tmp_path)
+    db_path = tmp_path / "telemetry.sqlite3"
+    reference_ts_ms = 2_000_000_000_000
+    rollup_cutoff_ms = reference_ts_ms - 15_552_000_000
+
+    with sqlite3.connect(db_path) as conn:
+        poller._ensure_tables(conn)
+        conn.execute(
+            """
+            INSERT INTO metric_rollups (
+                ts,
+                resolution_seconds,
+                device_type,
+                device_id,
+                metric,
+                value,
+                unit
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (rollup_cutoff_ms - 600_000, 600, "open_meteo", "1001", "temperature", 1.0, "celsius"),
+        )
+
+    assert poller.get_metric_catalog() == {"open_meteo": {"1001": ["temperature"]}}
+
+    result = poller._apply_metrics_retention(reference_ts_ms=reference_ts_ms)
+
+    assert result == {
+        "rolled_up_rows": 0,
+        "deleted_raw_rows": 0,
+        "deleted_rollup_rows": 1,
+    }
+    assert poller.list_metric_device_types() == []
+    assert poller.get_metric_catalog() == {}
+
+
 def test_zont_refresh_interval_180_is_valid(monkeypatch, tmp_path):
     settings = {
         "devices": {
@@ -1437,6 +1493,34 @@ def test_metric_catalog_includes_rollup_only_metrics(tmp_path):
     assert poller.list_metric_device_ids("open_meteo") == ["1001"]
     assert poller.list_metric_names("open_meteo", "1001") == ["temperature"]
     assert poller.get_metric_catalog() == {"open_meteo": {"1001": ["temperature"]}}
+
+
+def test_metric_catalog_cache_is_updated_after_new_metric_writes(tmp_path):
+    poller = DevicePoller({}, data_dir=tmp_path)
+
+    with sqlite3.connect(tmp_path / "telemetry.sqlite3") as conn:
+        poller._ensure_tables(conn)
+        conn.execute(
+            """
+            INSERT INTO metrics (ts, device_type, device_id, metric, value, unit)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (1_000, "open_meteo", "1001", "temperature", 3.5, "celsius"),
+        )
+
+    assert poller.get_metric_catalog() == {"open_meteo": {"1001": ["temperature"]}}
+
+    poller._write_metrics(
+        ts_ms=2_000,
+        device_type="open_meteo",
+        device_id="1001",
+        metrics=[MetricSample(name="windspeed", value=4.2, unit="km/h")],
+    )
+
+    assert poller.list_metric_names("open_meteo", "1001") == ["temperature", "windspeed"]
+    assert poller.get_metric_catalog() == {
+        "open_meteo": {"1001": ["temperature", "windspeed"]}
+    }
 
 
 def test_economics_metrics_are_computed_and_persisted(monkeypatch, tmp_path):
