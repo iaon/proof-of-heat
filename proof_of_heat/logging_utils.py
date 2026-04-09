@@ -1,12 +1,16 @@
 from __future__ import annotations
 
+from copy import deepcopy
 import logging
 import os
+from typing import Any
 
 TRACE_LEVEL = 5
 RESET = "\033[0m"
 LOG_FORMAT = "%(asctime)s %(levelname)8s: %(message)s"
 LOG_DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
+UVICORN_DEFAULT_LOG_FORMAT = "%(asctime)s %(levelprefix)s %(message)s"
+UVICORN_ACCESS_LOG_FORMAT = '%(asctime)s %(levelprefix)s %(client_addr)s - "%(request_line)s" %(status_code)s'
 LEVEL_COLORS = {
     TRACE_LEVEL: "\033[36m",
     logging.DEBUG: "\033[92m",
@@ -51,3 +55,14 @@ def configure_logging(level: int) -> None:
     root.handlers.clear()
     root.setLevel(level)
     root.addHandler(handler)
+
+
+def build_uvicorn_log_config() -> dict[str, Any]:
+    from uvicorn.config import LOGGING_CONFIG
+
+    log_config = deepcopy(LOGGING_CONFIG)
+    log_config["formatters"]["default"]["fmt"] = UVICORN_DEFAULT_LOG_FORMAT
+    log_config["formatters"]["default"]["datefmt"] = LOG_DATE_FORMAT
+    log_config["formatters"]["access"]["fmt"] = UVICORN_ACCESS_LOG_FORMAT
+    log_config["formatters"]["access"]["datefmt"] = LOG_DATE_FORMAT
+    return log_config

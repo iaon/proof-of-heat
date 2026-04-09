@@ -1,3 +1,4 @@
+import sys
 from types import SimpleNamespace
 
 import yaml
@@ -257,6 +258,25 @@ def test_create_app_logs_version_on_startup(tmp_path, monkeypatch, caplog):
     build_routes(tmp_path, monkeypatch)
 
     assert "Starting proof-of-heat FastAPI app version 1.2.3-testsha" in caplog.text
+
+
+def test_run_passes_custom_uvicorn_log_config(monkeypatch):
+    captured = {}
+    expected_log_config = {"version": 1, "formatters": {"default": {"fmt": "timestamped"}}}
+
+    def fake_run(*args, **kwargs):
+        captured["args"] = args
+        captured["kwargs"] = kwargs
+
+    monkeypatch.setattr(main, "build_uvicorn_log_config", lambda: expected_log_config)
+    monkeypatch.setitem(sys.modules, "uvicorn", SimpleNamespace(run=fake_run))
+
+    main.run()
+
+    assert captured["args"] == (main.app,)
+    assert captured["kwargs"]["host"] == "0.0.0.0"
+    assert captured["kwargs"]["port"] == 8000
+    assert captured["kwargs"]["log_config"] == expected_log_config
 
 
 def test_ui_respects_root_path(tmp_path, monkeypatch):

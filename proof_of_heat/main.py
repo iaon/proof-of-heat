@@ -16,7 +16,11 @@ from proof_of_heat.heating_modes import (
     clear_fixed_supply_temp_runtime_state,
     resolve_control_interval_seconds,
 )
-from proof_of_heat.logging_utils import configure_logging, ensure_trace_level
+from proof_of_heat.logging_utils import (
+    build_uvicorn_log_config,
+    configure_logging,
+    ensure_trace_level,
+)
 from proof_of_heat.version import get_display_version
 
 _startup_error: Exception | None = None
@@ -268,7 +272,7 @@ app: FastAPI = _safe_create_app()
 def run() -> None:
     import uvicorn
 
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run(app, host="0.0.0.0", port=8000, log_config=build_uvicorn_log_config())
 
 
 if __name__ == "__main__":
