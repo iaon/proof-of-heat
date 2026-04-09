@@ -311,7 +311,10 @@ def create_app(
         raw_yaml = payload.get("raw_yaml")
         if not isinstance(raw_yaml, str):
             raise deps.http_exception_cls(status_code=400, detail="raw_yaml must be a string")
-        parsed = deps.save_settings_yaml(raw_yaml)
+        try:
+            parsed = deps.save_settings_yaml(raw_yaml)
+        except ValueError as exc:
+            raise deps.http_exception_cls(status_code=400, detail=str(exc)) from exc
         settings_data = parsed
         device_poller.update_settings(parsed)
         if control_scheduler:

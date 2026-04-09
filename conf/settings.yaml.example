@@ -103,12 +103,6 @@ heating_mode:
   type: room_target
   params:
     target_room_temp_c: 22.0
-  # fixed_supply_temp example:
-  # type: fixed_supply_temp
-  # params:
-  #   target_supply_temp_c: 42.0
-  #   tolerance_c: 1.0
-  #   correction: 0.0
 
 heating_curve:
   slope: 6.0

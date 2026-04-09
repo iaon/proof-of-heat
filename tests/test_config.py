@@ -1,3 +1,8 @@
+import json
+from pathlib import Path
+
+import pytest
+
 from proof_of_heat.config import (
     AppConfig,
     FixedPowerHeatingParams,
@@ -6,7 +11,8 @@ from proof_of_heat.config import (
     MinerConfig,
     RoomTargetHeatingParams,
 )
-from proof_of_heat.settings import DEFAULT_SETTINGS_YAML, parse_settings_yaml, render_settings_yaml
+from proof_of_heat.settings import load_default_settings_yaml, parse_settings_yaml, render_settings_yaml
+from proof_of_heat.settings_schema import SettingsValidationError, build_settings_json_schema
 
 
 def test_miner_config_defaults_min_power():
@@ -22,14 +28,14 @@ def test_miner_config_defaults_max_power_to_none():
 
 
 def test_default_settings_yaml_includes_whatsminer_min_power():
-    parsed = parse_settings_yaml(DEFAULT_SETTINGS_YAML)
+    parsed = parse_settings_yaml(load_default_settings_yaml())
 
     whatsminer_devices = parsed["devices"]["whatsminer"]
     assert whatsminer_devices[0]["min_power"] == 1000
 
 
 def test_default_settings_yaml_includes_whatsminer_max_power():
-    parsed = parse_settings_yaml(DEFAULT_SETTINGS_YAML)
+    parsed = parse_settings_yaml(load_default_settings_yaml())
 
     whatsminer_devices = parsed["devices"]["whatsminer"]
     assert whatsminer_devices[0]["max_power"] is None
@@ -74,7 +80,7 @@ def test_app_config_includes_heating_mode():
 
 
 def test_default_settings_yaml_includes_heating_mode():
-    parsed = parse_settings_yaml(DEFAULT_SETTINGS_YAML)
+    parsed = parse_settings_yaml(load_default_settings_yaml())
 
     assert parsed["heating_mode"] == {
         "enabled": True,
@@ -86,7 +92,7 @@ def test_default_settings_yaml_includes_heating_mode():
 
 
 def test_default_settings_yaml_includes_database_maintenance_settings():
-    parsed = parse_settings_yaml(DEFAULT_SETTINGS_YAML)
+    parsed = parse_settings_yaml(load_default_settings_yaml())
 
     assert parsed["database"] == {
         "retention": {
@@ -120,7 +126,7 @@ def test_default_settings_yaml_includes_database_maintenance_settings():
 
 
 def test_default_settings_yaml_includes_economics():
-    parsed = parse_settings_yaml(DEFAULT_SETTINGS_YAML)
+    parsed = parse_settings_yaml(load_default_settings_yaml())
 
     assert parsed["economics"] == {
         "enabled": True,
@@ -162,7 +168,28 @@ def test_default_settings_yaml_includes_economics():
 def test_parse_settings_yaml_preserves_unquoted_time_of_day_values_as_strings():
     parsed = parse_settings_yaml(
         """
+location:
+  name: "Moscow"
+  latitude: 55.7558
+  longitude: 37.6173
+  timezone: "Europe/Moscow"
 economics:
+  enabled: true
+  currencies:
+    crypto: BTC
+    fiat: RUB
+  exchange_rate:
+    integrations:
+      crypto_usd: mempool_space
+      usd_fiat: cbr
+    refresh_interval: 3600
+    stale_after: 7200
+  hashprice:
+    integration: mempool_space
+    reward_stats_blocks: 144
+    hashrate_window: 1m
+    refresh_interval: 3600
+    stale_after: 7200
   electricity:
     mode: time_of_day
     tariffs:
@@ -195,3 +222,82 @@ def test_render_settings_yaml_quotes_time_of_day_values():
 
     assert "start: '07:00'" in rendered
     assert "start: '23:00'" in rendered
+
+
+def test_example_settings_yaml_is_valid():
+    raw_yaml = load_default_settings_yaml()
+
+    parsed = parse_settings_yaml(raw_yaml)
+
+    assert parsed["devices"]["met_no"][0]["device_id"] == 2001
+    assert parsed["devices"]["whatsminer"][0]["device_id"] == "miner01"
+
+
+def test_parse_settings_yaml_rejects_unknown_top_level_fields():
+    with pytest.raises(SettingsValidationError) as exc_info:
+        parse_settings_yaml("unexpected_section:\n  enabled: true\n")
+
+    assert "unexpected_section" in str(exc_info.value)
+    assert "Extra inputs are not permitted" in str(exc_info.value)
+
+
+def test_parse_settings_yaml_rejects_unknown_zont_integration_ids():
+    with pytest.raises(SettingsValidationError) as exc_info:
+        parse_settings_yaml(
+            """
+integrations:
+  zont_api:
+    - id: 1
+      headers:
+        X-ZONT-Client: "client"
+      login: "login"
+      password: "password"
+devices:
+  zont:
+    - integration_id: 2
+      device_id: 12000
+      serial: "0000000000"
+"""
+        )
+
+    assert "devices.zont integration_id 2" in str(exc_info.value)
+
+
+def test_parse_settings_yaml_requires_timezone_for_time_of_day_tariffs():
+    with pytest.raises(SettingsValidationError) as exc_info:
+        parse_settings_yaml(
+            """
+economics:
+  enabled: true
+  currencies:
+    crypto: BTC
+    fiat: RUB
+  exchange_rate:
+    integrations:
+      crypto_usd: mempool_space
+      usd_fiat: cbr
+    refresh_interval: 3600
+    stale_after: 7200
+  hashprice:
+    integration: mempool_space
+    reward_stats_blocks: 144
+    hashrate_window: 1m
+    refresh_interval: 3600
+    stale_after: 7200
+  electricity:
+    mode: time_of_day
+    tariffs:
+      - start: "07:00"
+        price_per_kwh: 8.0
+"""
+        )
+
+    assert "economics.electricity.time_of_day requires electricity.timezone or location.timezone" in str(
+        exc_info.value
+    )
+
+
+def test_checked_in_settings_json_schema_matches_generated_schema():
+    schema_path = Path(__file__).resolve().parents[1] / "conf" / "settings.schema.json"
+
+    assert json.loads(schema_path.read_text(encoding="utf-8")) == build_settings_json_schema()

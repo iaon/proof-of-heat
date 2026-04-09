@@ -1,13 +1,15 @@
 import sys
 from types import SimpleNamespace
 
+import pytest
 import yaml
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse, JSONResponse
 from starlette.requests import Request
 
 from proof_of_heat import main
 from proof_of_heat.config import AppConfig
+from proof_of_heat.settings import parse_settings_yaml as validate_settings_yaml
 
 
 class DummyMiner:
@@ -136,12 +138,19 @@ class DummyDevicePoller:
         return response
 
 
-def build_routes(tmp_path, monkeypatch, parsed_settings=None, latest_payloads=None):
+def build_routes(
+    tmp_path,
+    monkeypatch,
+    parsed_settings=None,
+    latest_payloads=None,
+    save_settings_impl=None,
+):
     app = build_test_app(
         tmp_path,
         monkeypatch,
         parsed_settings=parsed_settings,
         latest_payloads=latest_payloads,
+        save_settings_impl=save_settings_impl,
     )
     routes = {}
     for route in app.routes:
@@ -154,7 +163,13 @@ def build_routes(tmp_path, monkeypatch, parsed_settings=None, latest_payloads=No
     return routes
 
 
-def build_test_app(tmp_path, monkeypatch, parsed_settings=None, latest_payloads=None):
+def build_test_app(
+    tmp_path,
+    monkeypatch,
+    parsed_settings=None,
+    latest_payloads=None,
+    save_settings_impl=None,
+):
     settings = parsed_settings or {"devices": {}}
     DummyDevicePoller.latest_payloads = latest_payloads or {}
     DummyDevicePoller.latest_control_inputs = None
@@ -200,7 +215,12 @@ def build_test_app(tmp_path, monkeypatch, parsed_settings=None, latest_payloads=
         lambda parsed: yaml.safe_dump(parsed, sort_keys=False, allow_unicode=True),
         raising=False,
     )
-    monkeypatch.setattr(main, "save_settings_yaml", save_settings, raising=False)
+    monkeypatch.setattr(
+        main,
+        "save_settings_yaml",
+        save_settings_impl or save_settings,
+        raising=False,
+    )
     monkeypatch.setattr(main, "FastAPI", FastAPI, raising=False)
     monkeypatch.setattr(main, "HTMLResponse", HTMLResponse, raising=False)
     monkeypatch.setattr(main, "JSONResponse", JSONResponse, raising=False)
@@ -208,6 +228,30 @@ def build_test_app(tmp_path, monkeypatch, parsed_settings=None, latest_payloads=
     monkeypatch.setattr(main, "APP_VERSION", "1.2.3-testsha", raising=False)
 
     return main.create_app(AppConfig(data_dir=tmp_path))
+
+
+def test_update_config_returns_400_for_invalid_settings_yaml(tmp_path, monkeypatch):
+    routes = build_routes(
+        tmp_path,
+        monkeypatch,
+        save_settings_impl=validate_settings_yaml,
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        routes["POST /api/config"](
+            {
+                "raw_yaml": (
+                    "economics:\n"
+                    "  enabled: true\n"
+                    "  electricity:\n"
+                    "    mode: fixed\n"
+                    "    tariffs: []\n"
+                )
+            }
+        )
+
+    assert exc_info.value.status_code == 400
+    assert "fixed electricity mode does not allow tariffs" in exc_info.value.detail
 
 
 def make_request(path: str, root_path: str = "") -> Request:

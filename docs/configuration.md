@@ -1,6 +1,7 @@
 # Configuration Format
 
 Runtime configuration is stored in `conf/settings.yaml`.
+Its validation schema is stored in `conf/settings.schema.json`.
 
 The file is a plain YAML mapping with these top-level sections:
 
@@ -178,8 +179,7 @@ Expected fields:
 - `latitude` — decimal latitude.
 - `longitude` — decimal longitude.
 - `timezone` — timezone name used by weather providers, for example `Europe/Moscow`.
-
-Optional fields may be added later, such as altitude.
+- `altitude_m` — optional altitude in meters used by weather providers that support it.
 
 ### `integrations`
 
@@ -187,12 +187,12 @@ Currently supported shared integrations:
 
 - `zont_api` — list of ZONT API credentials.
 
-Each ZONT entry may contain:
+Each ZONT entry contains:
 
 - `id` — integration identifier referenced by ZONT devices.
 - `headers.X-ZONT-Client` — required client header value.
-- `login`
-- `password`
+- `login` — required account login.
+- `password` — required account password.
 
 ### `devices`
 
@@ -210,6 +210,9 @@ Common conventions:
 - `device_id` is the logical identifier used in stored metrics and config references.
 - Weather device IDs should be integers.
 - ZONT devices can override polling interval with `refresh_interval`.
+- ZONT devices may omit `integration_id`; in that case the first configured `integrations.zont_api` entry is used.
+- WhatsMiner devices use `host`, `login`, and `password` to talk to the miner API.
+- WhatsMiner devices may define `timeout` in seconds for miner API calls.
 - WhatsMiner devices may define `max_power` in watts. This is an optional upper bound reserved for future control logic; it is currently stored in config and passed into the plugin, but not enforced yet.
 - WhatsMiner devices may define `min_power` in watts. This is the minimum stable operating power; future control logic can treat lower requested power as a stop condition.
 
@@ -360,6 +363,8 @@ Supported modes:
   - uses the resolved `control_inputs.supply_temp` value as the sensor input
 - `room_target`
   - required `params.target_room_temp_c`
+  - optional `params.tolerance_c`, default `1.0`
+  - optional `params.correction`, default `0.0`
   - uses `control_inputs.outdoor_temp` to compute a target supply temperature from `heating_curve`
   - uses `control_inputs.supply_temp` as the measured supply temperature for the low-level power regulator
   - optionally uses `control_inputs.indoor_temp` to force `100%` power when the room is far below target
@@ -431,4 +436,5 @@ Time-of-day tariff rules:
 ## Source of Truth
 
 - Use `conf/settings.yaml.example` as the canonical sample file.
-- When configuration fields change, update both `conf/settings.yaml.example` and this document in the same change.
+- Use `conf/settings.schema.json` as the machine-readable schema for editor and CI validation.
+- When configuration fields change, update `conf/settings.yaml.example`, `conf/settings.schema.json`, and this document in the same change.

@@ -1,0 +1,1320 @@
+{
+  "$defs": {
+    "ControlInputSettings": {
+      "additionalProperties": false,
+      "properties": {
+        "default": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Default"
+        },
+        "select": {
+          "enum": [
+            "highest_priority_available",
+            "sum_all_available"
+          ],
+          "title": "Select",
+          "type": "string"
+        },
+        "sources": {
+          "items": {
+            "$ref": "#/$defs/ControlInputSourceSettings"
+          },
+          "title": "Sources",
+          "type": "array"
+        }
+      },
+      "required": [
+        "select"
+      ],
+      "title": "ControlInputSettings",
+      "type": "object"
+    },
+    "ControlInputSourceSettings": {
+      "additionalProperties": false,
+      "properties": {
+        "correction": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Correction"
+        },
+        "device_id": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "title": "Device Id"
+        },
+        "device_type": {
+          "title": "Device Type",
+          "type": "string"
+        },
+        "metric": {
+          "title": "Metric",
+          "type": "string"
+        }
+      },
+      "required": [
+        "device_type",
+        "device_id",
+        "metric"
+      ],
+      "title": "ControlInputSourceSettings",
+      "type": "object"
+    },
+    "ControlInputsSettings": {
+      "additionalProperties": false,
+      "properties": {
+        "indoor_temp": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ControlInputSettings"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "max_age_seconds": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Max Age Seconds"
+        },
+        "outdoor_temp": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ControlInputSettings"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "power": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ControlInputSettings"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "supply_temp": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ControlInputSettings"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "title": "ControlInputsSettings",
+      "type": "object"
+    },
+    "CurrenciesSettings": {
+      "additionalProperties": false,
+      "properties": {
+        "crypto": {
+          "title": "Crypto",
+          "type": "string"
+        },
+        "fiat": {
+          "title": "Fiat",
+          "type": "string"
+        }
+      },
+      "required": [
+        "crypto",
+        "fiat"
+      ],
+      "title": "CurrenciesSettings",
+      "type": "object"
+    },
+    "DatabaseMaintenanceSettings": {
+      "additionalProperties": false,
+      "properties": {
+        "vacuum": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/VacuumMaintenanceSettings"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "title": "DatabaseMaintenanceSettings",
+      "type": "object"
+    },
+    "DatabaseRetentionSettings": {
+      "additionalProperties": false,
+      "properties": {
+        "metrics": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/MetricsRetentionSettings"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "raw_events": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RawEventsRetentionSettings"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "title": "DatabaseRetentionSettings",
+      "type": "object"
+    },
+    "DatabaseSettings": {
+      "additionalProperties": false,
+      "properties": {
+        "maintenance": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/DatabaseMaintenanceSettings"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "retention": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/DatabaseRetentionSettings"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "title": "DatabaseSettings",
+      "type": "object"
+    },
+    "DevicesSettings": {
+      "additionalProperties": false,
+      "properties": {
+        "met_no": {
+          "items": {
+            "$ref": "#/$defs/WeatherDeviceSettings"
+          },
+          "title": "Met No",
+          "type": "array"
+        },
+        "open_meteo": {
+          "items": {
+            "$ref": "#/$defs/WeatherDeviceSettings"
+          },
+          "title": "Open Meteo",
+          "type": "array"
+        },
+        "refresh_interval": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Refresh Interval"
+        },
+        "whatsminer": {
+          "items": {
+            "$ref": "#/$defs/WhatsminerDeviceSettings"
+          },
+          "title": "Whatsminer",
+          "type": "array"
+        },
+        "zont": {
+          "items": {
+            "$ref": "#/$defs/ZontDeviceSettings"
+          },
+          "title": "Zont",
+          "type": "array"
+        }
+      },
+      "title": "DevicesSettings",
+      "type": "object"
+    },
+    "EconomicsSettings": {
+      "additionalProperties": false,
+      "properties": {
+        "currencies": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CurrenciesSettings"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "electricity": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ElectricitySettings"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "enabled": {
+          "default": true,
+          "title": "Enabled",
+          "type": "boolean"
+        },
+        "exchange_rate": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ExchangeRateSettings"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "hashprice": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/HashpriceSettings"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "title": "EconomicsSettings",
+      "type": "object"
+    },
+    "ElectricitySettings": {
+      "additionalProperties": false,
+      "properties": {
+        "mode": {
+          "anyOf": [
+            {
+              "enum": [
+                "fixed",
+                "time_of_day"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Mode"
+        },
+        "price_per_kwh": {
+          "anyOf": [
+            {
+              "minimum": 0.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Price Per Kwh"
+        },
+        "tariffs": {
+          "anyOf": [
+            {
+              "items": {
+                "$ref": "#/$defs/ElectricityTariffSettings"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Tariffs"
+        },
+        "timezone": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Timezone"
+        }
+      },
+      "title": "ElectricitySettings",
+      "type": "object"
+    },
+    "ElectricityTariffSettings": {
+      "additionalProperties": false,
+      "properties": {
+        "price_per_kwh": {
+          "minimum": 0.0,
+          "title": "Price Per Kwh",
+          "type": "number"
+        },
+        "start": {
+          "pattern": "^(?:[01]\\d|2[0-3]):[0-5]\\d$",
+          "title": "Start",
+          "type": "string"
+        }
+      },
+      "required": [
+        "start",
+        "price_per_kwh"
+      ],
+      "title": "ElectricityTariffSettings",
+      "type": "object"
+    },
+    "ExchangeRateIntegrationsSettings": {
+      "additionalProperties": false,
+      "properties": {
+        "crypto_usd": {
+          "const": "mempool_space",
+          "enum": [
+            "mempool_space"
+          ],
+          "title": "Crypto Usd",
+          "type": "string"
+        },
+        "usd_fiat": {
+          "const": "cbr",
+          "enum": [
+            "cbr"
+          ],
+          "title": "Usd Fiat",
+          "type": "string"
+        }
+      },
+      "required": [
+        "crypto_usd",
+        "usd_fiat"
+      ],
+      "title": "ExchangeRateIntegrationsSettings",
+      "type": "object"
+    },
+    "ExchangeRateSettings": {
+      "additionalProperties": false,
+      "properties": {
+        "integrations": {
+          "$ref": "#/$defs/ExchangeRateIntegrationsSettings"
+        },
+        "refresh_interval": {
+          "exclusiveMinimum": 0,
+          "title": "Refresh Interval",
+          "type": "integer"
+        },
+        "stale_after": {
+          "minimum": 0,
+          "title": "Stale After",
+          "type": "integer"
+        },
+        "timeout_s": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Timeout S"
+        }
+      },
+      "required": [
+        "integrations",
+        "refresh_interval",
+        "stale_after"
+      ],
+      "title": "ExchangeRateSettings",
+      "type": "object"
+    },
+    "FixedPowerHeatingParams": {
+      "additionalProperties": false,
+      "properties": {
+        "power_w": {
+          "exclusiveMinimum": 0,
+          "title": "Power W",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "power_w"
+      ],
+      "title": "FixedPowerHeatingParams",
+      "type": "object"
+    },
+    "FixedSupplyTempHeatingParams": {
+      "additionalProperties": false,
+      "properties": {
+        "correction": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Correction"
+        },
+        "target_supply_temp_c": {
+          "title": "Target Supply Temp C",
+          "type": "number"
+        },
+        "tolerance_c": {
+          "anyOf": [
+            {
+              "minimum": 0.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Tolerance C"
+        }
+      },
+      "required": [
+        "target_supply_temp_c"
+      ],
+      "title": "FixedSupplyTempHeatingParams",
+      "type": "object"
+    },
+    "HashpriceSettings": {
+      "additionalProperties": false,
+      "properties": {
+        "hashrate_window": {
+          "title": "Hashrate Window",
+          "type": "string"
+        },
+        "integration": {
+          "const": "mempool_space",
+          "enum": [
+            "mempool_space"
+          ],
+          "title": "Integration",
+          "type": "string"
+        },
+        "refresh_interval": {
+          "exclusiveMinimum": 0,
+          "title": "Refresh Interval",
+          "type": "integer"
+        },
+        "reward_stats_blocks": {
+          "exclusiveMinimum": 0,
+          "title": "Reward Stats Blocks",
+          "type": "integer"
+        },
+        "stale_after": {
+          "minimum": 0,
+          "title": "Stale After",
+          "type": "integer"
+        },
+        "timeout_s": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Timeout S"
+        }
+      },
+      "required": [
+        "integration",
+        "reward_stats_blocks",
+        "hashrate_window",
+        "refresh_interval",
+        "stale_after"
+      ],
+      "title": "HashpriceSettings",
+      "type": "object"
+    },
+    "HeatingCurveSettings": {
+      "additionalProperties": false,
+      "properties": {
+        "exponent": {
+          "anyOf": [
+            {
+              "minimum": 0.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Exponent"
+        },
+        "force_max_power_below_target": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Force Max Power Below Target"
+        },
+        "force_max_power_margin_c": {
+          "anyOf": [
+            {
+              "minimum": 0.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Force Max Power Margin C"
+        },
+        "max_supply_temp_c": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Max Supply Temp C"
+        },
+        "min_supply_temp_c": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Min Supply Temp C"
+        },
+        "offset": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Offset"
+        },
+        "slope": {
+          "anyOf": [
+            {
+              "minimum": 0.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Slope"
+        }
+      },
+      "title": "HeatingCurveSettings",
+      "type": "object"
+    },
+    "HeatingModeSettings": {
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "default": true,
+          "title": "Enabled",
+          "type": "boolean"
+        },
+        "params": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/FixedPowerHeatingParams"
+            },
+            {
+              "$ref": "#/$defs/FixedSupplyTempHeatingParams"
+            },
+            {
+              "$ref": "#/$defs/RoomTargetHeatingParams"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Params"
+        },
+        "target_room_temp_c": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Target Room Temp C"
+        },
+        "type": {
+          "anyOf": [
+            {
+              "enum": [
+                "fixed_power",
+                "fixed_supply_temp",
+                "room_target"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Type"
+        }
+      },
+      "title": "HeatingModeSettings",
+      "type": "object"
+    },
+    "IntegrationsSettings": {
+      "additionalProperties": false,
+      "properties": {
+        "zont_api": {
+          "items": {
+            "$ref": "#/$defs/ZontApiIntegrationSettings"
+          },
+          "title": "Zont Api",
+          "type": "array"
+        }
+      },
+      "title": "IntegrationsSettings",
+      "type": "object"
+    },
+    "LocationSettings": {
+      "additionalProperties": false,
+      "properties": {
+        "altitude_m": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Altitude M"
+        },
+        "latitude": {
+          "title": "Latitude",
+          "type": "number"
+        },
+        "longitude": {
+          "title": "Longitude",
+          "type": "number"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "timezone": {
+          "title": "Timezone",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "latitude",
+        "longitude",
+        "timezone"
+      ],
+      "title": "LocationSettings",
+      "type": "object"
+    },
+    "MetricRollupSettings": {
+      "additionalProperties": false,
+      "properties": {
+        "resolution_seconds": {
+          "exclusiveMinimum": 0,
+          "title": "Resolution Seconds",
+          "type": "integer"
+        },
+        "retention_seconds": {
+          "exclusiveMinimum": 0,
+          "title": "Retention Seconds",
+          "type": "integer"
+        },
+        "sample": {
+          "default": "last",
+          "enum": [
+            "last",
+            "first",
+            "any"
+          ],
+          "title": "Sample",
+          "type": "string"
+        }
+      },
+      "required": [
+        "resolution_seconds",
+        "retention_seconds"
+      ],
+      "title": "MetricRollupSettings",
+      "type": "object"
+    },
+    "MetricsRetentionSettings": {
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "default": true,
+          "title": "Enabled",
+          "type": "boolean"
+        },
+        "interval_seconds": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Interval Seconds"
+        },
+        "raw_retention_seconds": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Raw Retention Seconds"
+        },
+        "rollups": {
+          "anyOf": [
+            {
+              "items": {
+                "$ref": "#/$defs/MetricRollupSettings"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Rollups"
+        }
+      },
+      "title": "MetricsRetentionSettings",
+      "type": "object"
+    },
+    "RawEventsRetentionSettings": {
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "default": true,
+          "title": "Enabled",
+          "type": "boolean"
+        },
+        "interval_seconds": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Interval Seconds"
+        },
+        "retention_seconds": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Retention Seconds"
+        }
+      },
+      "title": "RawEventsRetentionSettings",
+      "type": "object"
+    },
+    "RoomTargetHeatingParams": {
+      "additionalProperties": false,
+      "properties": {
+        "correction": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Correction"
+        },
+        "target_room_temp_c": {
+          "title": "Target Room Temp C",
+          "type": "number"
+        },
+        "tolerance_c": {
+          "anyOf": [
+            {
+              "minimum": 0.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Tolerance C"
+        }
+      },
+      "required": [
+        "target_room_temp_c"
+      ],
+      "title": "RoomTargetHeatingParams",
+      "type": "object"
+    },
+    "VacuumMaintenanceSettings": {
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "default": true,
+          "title": "Enabled",
+          "type": "boolean"
+        },
+        "interval_seconds": {
+          "exclusiveMinimum": 0,
+          "title": "Interval Seconds",
+          "type": "integer"
+        },
+        "min_free_ratio": {
+          "anyOf": [
+            {
+              "maximum": 1.0,
+              "minimum": 0.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Min Free Ratio"
+        },
+        "min_reclaimable_mb": {
+          "anyOf": [
+            {
+              "minimum": 0.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Min Reclaimable Mb"
+        }
+      },
+      "required": [
+        "interval_seconds"
+      ],
+      "title": "VacuumMaintenanceSettings",
+      "type": "object"
+    },
+    "WeatherDeviceSettings": {
+      "additionalProperties": false,
+      "properties": {
+        "device_id": {
+          "title": "Device Id",
+          "type": "integer"
+        },
+        "type": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Type"
+        }
+      },
+      "required": [
+        "device_id"
+      ],
+      "title": "WeatherDeviceSettings",
+      "type": "object"
+    },
+    "WhatsminerDeviceSettings": {
+      "additionalProperties": false,
+      "properties": {
+        "device_id": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "title": "Device Id"
+        },
+        "host": {
+          "title": "Host",
+          "type": "string"
+        },
+        "login": {
+          "title": "Login",
+          "type": "string"
+        },
+        "max_power": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Max Power"
+        },
+        "min_power": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Min Power"
+        },
+        "password": {
+          "title": "Password",
+          "type": "string"
+        },
+        "port": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Port"
+        },
+        "timeout": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Timeout"
+        }
+      },
+      "required": [
+        "device_id",
+        "login",
+        "password",
+        "host"
+      ],
+      "title": "WhatsminerDeviceSettings",
+      "type": "object"
+    },
+    "ZontApiIntegrationSettings": {
+      "additionalProperties": false,
+      "properties": {
+        "headers": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "title": "Headers",
+          "type": "object"
+        },
+        "id": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "title": "Id"
+        },
+        "login": {
+          "title": "Login",
+          "type": "string"
+        },
+        "password": {
+          "title": "Password",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "headers",
+        "login",
+        "password"
+      ],
+      "title": "ZontApiIntegrationSettings",
+      "type": "object"
+    },
+    "ZontDeviceSettings": {
+      "additionalProperties": false,
+      "properties": {
+        "device_id": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "title": "Device Id"
+        },
+        "integration_id": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Integration Id"
+        },
+        "refresh_interval": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Refresh Interval"
+        },
+        "serial": {
+          "title": "Serial",
+          "type": "string"
+        }
+      },
+      "required": [
+        "device_id",
+        "serial"
+      ],
+      "title": "ZontDeviceSettings",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "control_inputs": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ControlInputsSettings"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "database": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/DatabaseSettings"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "devices": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/DevicesSettings"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "economics": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/EconomicsSettings"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "heating_curve": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/HeatingCurveSettings"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "heating_mode": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/HeatingModeSettings"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "integrations": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/IntegrationsSettings"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "location": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/LocationSettings"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    }
+  },
+  "title": "SettingsSchema",
+  "type": "object"
+}
