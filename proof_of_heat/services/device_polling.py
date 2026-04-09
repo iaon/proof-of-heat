@@ -26,6 +26,7 @@ from proof_of_heat.services.economic_polling import (
     EconomicsPoller,
 )
 from proof_of_heat.services.metrics import MetricSample
+from proof_of_heat.services.sqlite_logging import connect_logged_sqlite
 from proof_of_heat.services.weather import fetch_met_no_weather, fetch_open_meteo_weather
 
 ensure_trace_level()
@@ -262,7 +263,7 @@ class DevicePoller:
         if not self._db_path:
             return []
         with self._db_lock:
-            with sqlite3.connect(self._db_path) as conn:
+            with connect_logged_sqlite(self._db_path, logger=logger) as conn:
                 self._ensure_schema(conn)
                 rows = conn.execute(
                     """
@@ -281,7 +282,7 @@ class DevicePoller:
         if not self._db_path:
             return []
         with self._db_lock:
-            with sqlite3.connect(self._db_path) as conn:
+            with connect_logged_sqlite(self._db_path, logger=logger) as conn:
                 self._ensure_schema(conn)
                 rows = conn.execute(
                     """
@@ -305,7 +306,7 @@ class DevicePoller:
         if not self._db_path:
             return []
         with self._db_lock:
-            with sqlite3.connect(self._db_path) as conn:
+            with connect_logged_sqlite(self._db_path, logger=logger) as conn:
                 self._ensure_schema(conn)
                 rows = conn.execute(
                     """
@@ -331,7 +332,7 @@ class DevicePoller:
         if not self._db_path:
             return {}
         with self._db_lock:
-            with sqlite3.connect(self._db_path) as conn:
+            with connect_logged_sqlite(self._db_path, logger=logger) as conn:
                 self._ensure_schema(conn)
                 rows = conn.execute(
                     """
@@ -453,7 +454,7 @@ class DevicePoller:
                 )
 
         with self._db_lock:
-            with sqlite3.connect(self._db_path) as conn:
+            with connect_logged_sqlite(self._db_path, logger=logger) as conn:
                 self._ensure_schema(conn)
                 rows: list[tuple[int, float]] = []
                 for query, query_params in metric_queries:
@@ -490,7 +491,7 @@ class DevicePoller:
         if not self._db_path:
             return None
         with self._db_lock:
-            with sqlite3.connect(self._db_path) as conn:
+            with connect_logged_sqlite(self._db_path, logger=logger) as conn:
                 self._ensure_schema(conn)
                 row = conn.execute(
                     """
@@ -535,7 +536,7 @@ class DevicePoller:
         if not self._db_path:
             return None
         with self._db_lock:
-            with sqlite3.connect(self._db_path) as conn:
+            with connect_logged_sqlite(self._db_path, logger=logger) as conn:
                 self._ensure_schema(conn)
                 row = conn.execute(
                     """
@@ -632,7 +633,7 @@ class DevicePoller:
             )
 
         with self._db_lock:
-            with sqlite3.connect(self._db_path) as conn:
+            with connect_logged_sqlite(self._db_path, logger=logger) as conn:
                 self._ensure_schema(conn)
                 conn.execute(
                     """
@@ -1039,7 +1040,7 @@ class DevicePoller:
             return
         payload_json = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
         with self._db_lock:
-            with sqlite3.connect(self._db_path) as conn:
+            with connect_logged_sqlite(self._db_path, logger=logger) as conn:
                 self._ensure_schema(conn)
                 conn.execute(
                     """
@@ -1084,7 +1085,7 @@ class DevicePoller:
             for sample in metrics
         ]
         with self._db_lock:
-            with sqlite3.connect(self._db_path) as conn:
+            with connect_logged_sqlite(self._db_path, logger=logger) as conn:
                 self._ensure_schema(conn)
                 conn.executemany(
                     """
@@ -1263,7 +1264,7 @@ class DevicePoller:
         cutoff_ms = now_ms - (policy.retention_seconds * 1000)
 
         with self._db_lock:
-            with sqlite3.connect(self._db_path) as conn:
+            with connect_logged_sqlite(self._db_path, logger=logger) as conn:
                 self._ensure_schema(conn)
                 cursor = conn.execute(
                     """
@@ -1299,7 +1300,7 @@ class DevicePoller:
         rollup_cutoff_ms = now_ms - (policy.rollup.retention_seconds * 1000)
 
         with self._db_lock:
-            with sqlite3.connect(self._db_path) as conn:
+            with connect_logged_sqlite(self._db_path, logger=logger) as conn:
                 self._ensure_schema(conn)
                 raw_rows = conn.execute(
                     """
@@ -1507,7 +1508,7 @@ class DevicePoller:
 
         policy = self._load_database_vacuum_policy()
         with self._db_lock:
-            with sqlite3.connect(self._db_path) as conn:
+            with connect_logged_sqlite(self._db_path, logger=logger) as conn:
                 self._ensure_schema(conn)
                 stats = self._collect_database_vacuum_stats(conn)
 
@@ -1540,7 +1541,7 @@ class DevicePoller:
 
         policy = self._load_database_vacuum_policy()
         with self._db_lock:
-            with sqlite3.connect(self._db_path, isolation_level=None) as conn:
+            with connect_logged_sqlite(self._db_path, logger=logger, isolation_level=None) as conn:
                 self._ensure_schema(conn)
                 before = self._collect_database_vacuum_stats(conn)
                 should_vacuum, reason = self._evaluate_database_vacuum(

@@ -16,6 +16,7 @@ from proof_of_heat.services.market_data import (
     fetch_mempool_reward_stats,
 )
 from proof_of_heat.services.metrics import MetricSample
+from proof_of_heat.services.sqlite_logging import connect_logged_sqlite
 
 logger = logging.getLogger("proof_of_heat.economic_polling")
 
@@ -252,7 +253,7 @@ class EconomicsPoller:
 
         if self._db_path and self._db_lock is not None and self._ensure_schema is not None:
             with self._db_lock:
-                with sqlite3.connect(self._db_path) as conn:
+                with connect_logged_sqlite(self._db_path, logger=logger) as conn:
                     self._ensure_schema(conn)
                     if crypto_usd is None:
                         crypto_usd = _get_latest_metric_value(
