@@ -1646,9 +1646,20 @@ def test_economics_metrics_are_computed_and_persisted(monkeypatch, tmp_path):
     assert abs(payload["derived"]["hashprice_btc_th_day"] - 0.0000018) < 1e-12
     assert abs(payload["derived"]["hashprice_eur_th_day"] - 0.1629) < 1e-9
     assert payload["derived"]["electricity_price_eur_kwh"] == 0.06
-    assert abs(payload["derived"]["hashcost_eur_th_day"] - 0.0288) < 1e-9
-    assert abs(payload["derived"]["hashcost_btc_th_day"] - (0.0288 / 90_500)) < 1e-15
+    assert (
+        abs(payload["derived"]["hashcost_eur_th_day__whatsminer__miner01"] - 0.0288) < 1e-9
+    )
+    assert (
+        abs(
+            payload["derived"]["hashcost_btc_th_day__whatsminer__miner01"]
+            - (0.0288 / 90_500)
+        )
+        < 1e-15
+    )
     assert payload["derived"]["power_rate_source"] == "whatsminer:miner01:power_rate"
+    assert payload["derived"]["power_rate_sources"] == {
+        "whatsminer:miner01": "whatsminer:miner01:power_rate"
+    }
 
     metric_names = set(poller.list_metric_names("economics", "market"))
     assert {
@@ -1660,8 +1671,8 @@ def test_economics_metrics_are_computed_and_persisted(monkeypatch, tmp_path):
         "hashprice_btc_th_day",
         "hashprice_eur_th_day",
         "electricity_price_eur_kwh",
-        "hashcost_eur_th_day",
-        "hashcost_btc_th_day",
+        "hashcost_eur_th_day__whatsminer__miner01",
+        "hashcost_btc_th_day__whatsminer__miner01",
     } <= metric_names
 
     with sqlite3.connect(tmp_path / "telemetry.sqlite3") as conn:
@@ -1680,6 +1691,145 @@ def test_economics_metrics_are_computed_and_persisted(monkeypatch, tmp_path):
     assert raw_payload["exchange_rate"]["crypto_usd"]["prices"]["USD"] == 100000
     assert raw_payload["exchange_rate"]["usd_fiat"]["rates"]["EUR"] == 100.0
     assert raw_payload["hashprice"]["reward_stats"]["payload"]["totalReward"] == "90000000000"
+
+
+def test_economics_hashcost_is_computed_for_each_power_rate_source(monkeypatch, tmp_path):
+    current_iso = datetime.now(timezone.utc).isoformat()
+    settings = {
+        "devices": {
+            "whatsminer": [
+                {
+                    "device_id": "miner01",
+                    "login": "login",
+                    "password": "pass",
+                    "host": "example-1.com",
+                    "port": 4028,
+                },
+                {
+                    "device_id": "miner02",
+                    "login": "login",
+                    "password": "pass",
+                    "host": "example-2.com",
+                    "port": 4028,
+                },
+            ]
+        },
+        "economics": {
+            "enabled": True,
+            "currencies": {
+                "crypto": "BTC",
+                "fiat": "EUR",
+            },
+            "exchange_rate": {
+                "integrations": {
+                    "crypto_usd": "mempool_space",
+                    "usd_fiat": "cbr",
+                },
+                "refresh_interval": 3600,
+                "stale_after": 7200,
+            },
+            "hashprice": {
+                "integration": "mempool_space",
+                "reward_stats_blocks": 144,
+                "hashrate_window": "1m",
+                "refresh_interval": 3600,
+                "stale_after": 7200,
+            },
+            "electricity": {
+                "mode": "fixed",
+                "price_per_kwh": 0.06,
+            },
+        },
+    }
+
+    monkeypatch.setattr(device_polling.DevicePoller, "_ping_host", lambda *args, **kwargs: True)
+
+    def fake_call_whatsminer(**kwargs):
+        if kwargs["cmd"] == "get.miner.status" and kwargs.get("param") == "summary":
+            power_rate = 20.0 if kwargs["host"] == "example-1.com" else 30.0
+            return {
+                "when": current_iso,
+                "msg": {
+                    "summary": {
+                        "power": 1000,
+                        "power-rate": power_rate,
+                        "board-temperature": [55.0],
+                    }
+                },
+            }
+        if kwargs["cmd"] == "get.miner.status" and kwargs.get("param") == "pools":
+            return {
+                "when": current_iso,
+                "msg": {"pools": []},
+            }
+        if kwargs["cmd"] == "get.device.info":
+            return {
+                "when": current_iso,
+                "msg": {"model": "M50"},
+            }
+        raise AssertionError(f"Unexpected Whatsminer call: {kwargs}")
+
+    monkeypatch.setattr(device_polling, "call_whatsminer", fake_call_whatsminer)
+    monkeypatch.setattr(
+        economic_polling,
+        "fetch_mempool_prices",
+        lambda **kwargs: {
+            "provider": "mempool_space",
+            "timestamp": 1774739307,
+            "prices": {"USD": 100000},
+        },
+    )
+    monkeypatch.setattr(
+        economic_polling,
+        "fetch_cbr_daily_rates",
+        lambda **kwargs: {
+            "provider": "cbr",
+            "timestamp": "01.04.2026",
+            "base_currency": "RUB",
+            "rates": {"RUB": 1.0, "USD": 90.5, "EUR": 100.0},
+        },
+    )
+    monkeypatch.setattr(
+        economic_polling,
+        "fetch_mempool_reward_stats",
+        lambda **kwargs: {
+            "provider": "mempool_space",
+            "block_count": 144,
+            "payload": {
+                "totalReward": "90000000000",
+                "totalFee": "100000000",
+                "totalTx": "1000",
+            },
+        },
+    )
+    monkeypatch.setattr(
+        economic_polling,
+        "fetch_mempool_hashrate",
+        lambda **kwargs: {
+            "provider": "mempool_space",
+            "time_period": "1m",
+            "payload": {"currentHashrate": 500_000_000_000_000_000_000},
+        },
+    )
+
+    poller = DevicePoller(settings, data_dir=tmp_path)
+    for device in settings["devices"]["whatsminer"]:
+        poller.poll_whatsminer_device(device)
+    payload = poller.poll_economics(settings["economics"])
+
+    assert abs(payload["derived"]["hashcost_eur_th_day__whatsminer__miner01"] - 0.0288) < 1e-9
+    assert abs(payload["derived"]["hashcost_eur_th_day__whatsminer__miner02"] - 0.0432) < 1e-9
+    assert "power_rate_source" not in payload["derived"]
+    assert payload["derived"]["power_rate_sources"] == {
+        "whatsminer:miner01": "whatsminer:miner01:power_rate",
+        "whatsminer:miner02": "whatsminer:miner02:power_rate",
+    }
+
+    metadata = poller.get_economics_metadata()
+    assert metadata["current_metrics"].count("hashcost_eur_th_day__whatsminer__miner01") == 1
+    assert metadata["current_metrics"].count("hashcost_eur_th_day__whatsminer__miner02") == 1
+    assert "hashcost_btc_th_day__whatsminer__miner01" in metadata["presets"]["profitability"]["metrics"]
+    assert "hashcost_btc_th_day__whatsminer__miner02" in metadata["presets"]["profitability"]["metrics"]
 
 
 def test_economics_job_is_scheduled_without_devices(monkeypatch, tmp_path):
@@ -1761,6 +1911,13 @@ def test_economics_is_polled_immediately_on_start(monkeypatch, tmp_path):
 
 def test_economics_metadata_includes_stale_after_by_metric(tmp_path):
     settings = {
+        "devices": {
+            "whatsminer": [
+                {
+                    "device_id": "miner01",
+                }
+            ]
+        },
         "economics": {
             "enabled": True,
             "currencies": {
@@ -1794,7 +1951,10 @@ def test_economics_metadata_includes_stale_after_by_metric(tmp_path):
     assert metadata["stale_after_ms_by_metric"]["exchange_rate_btc_usd"] == 5_400_000
     assert metadata["stale_after_ms_by_metric"]["exchange_rate_usd_eur"] == 5_400_000
     assert metadata["stale_after_ms_by_metric"]["hashprice_btc_th_day"] == 7_200_000
-    assert metadata["stale_after_ms_by_metric"]["hashcost_eur_th_day"] == 7_200_000
+    assert (
+        metadata["stale_after_ms_by_metric"]["hashcost_eur_th_day__whatsminer__miner01"]
+        == 7_200_000
+    )
 
 
 def test_economics_time_of_day_tariff_uses_location_timezone(monkeypatch, tmp_path):

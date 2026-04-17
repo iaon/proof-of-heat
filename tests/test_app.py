@@ -552,18 +552,23 @@ def test_economics_api_returns_latest_payload_and_catalog(tmp_path, monkeypatch)
             "exchange_rate_usd_eur",
             "exchange_rate_btc_eur",
             "hashprice_btc_th_day",
+            "hashcost_eur_th_day__whatsminer__miner01",
         ],
         "current_metrics": [
             "exchange_rate_btc_usd",
             "exchange_rate_usd_eur",
             "exchange_rate_btc_eur",
             "hashprice_btc_th_day",
+            "hashcost_eur_th_day__whatsminer__miner01",
         ],
         "labels": {
             "exchange_rate_btc_usd": "BTC price in USD",
             "exchange_rate_usd_eur": "USD to EUR exchange rate",
             "exchange_rate_btc_eur": "BTC price in EUR",
             "hashprice_btc_th_day": "Hashprice in BTC per TH per day",
+            "hashcost_eur_th_day__whatsminer__miner01": (
+                "Electricity cost in EUR per TH per day (whatsminer:miner01)"
+            ),
         },
         "presets": {
             "rates": {
@@ -580,6 +585,7 @@ def test_economics_api_returns_latest_payload_and_catalog(tmp_path, monkeypatch)
             "exchange_rate_usd_eur": 7200000,
             "exchange_rate_btc_eur": 7200000,
             "hashprice_btc_th_day": 7200000,
+            "hashcost_eur_th_day__whatsminer__miner01": 7200000,
         },
         "device_type": "economics",
         "device_id": "market",
@@ -591,6 +597,7 @@ def test_economics_api_returns_latest_payload_and_catalog(tmp_path, monkeypatch)
                 "derived": {
                     "exchange_rate_btc_eur": 92000,
                     "hashprice_btc_th_day": 0.0000015,
+                    "hashcost_eur_th_day__whatsminer__miner01": 0.0288,
                 },
                 "errors": [],
             },
@@ -604,6 +611,7 @@ def test_economics_api_returns_latest_payload_and_catalog(tmp_path, monkeypatch)
         "data": {
             "exchange_rate_btc_eur": 92000,
             "hashprice_btc_th_day": 0.0000015,
+            "hashcost_eur_th_day__whatsminer__miner01": 0.0288,
         },
         "errors": [],
         "polled_at": "2026-04-01T10:00:00+00:00",
@@ -614,14 +622,23 @@ def test_economics_api_returns_latest_payload_and_catalog(tmp_path, monkeypatch)
         "exchange_rate_usd_eur",
         "exchange_rate_btc_eur",
         "hashprice_btc_th_day",
+        "hashcost_eur_th_day__whatsminer__miner01",
     ]
     assert catalog_payload["labels"]["exchange_rate_btc_eur"] == "BTC price in EUR"
+    assert (
+        catalog_payload["labels"]["hashcost_eur_th_day__whatsminer__miner01"]
+        == "Electricity cost in EUR per TH per day (whatsminer:miner01)"
+    )
     assert catalog_payload["presets"]["rates"]["metrics"] == [
         "exchange_rate_btc_usd",
         "exchange_rate_usd_eur",
         "exchange_rate_btc_eur",
     ]
     assert catalog_payload["stale_after_ms_by_metric"]["exchange_rate_btc_eur"] == 7_200_000
+    assert (
+        catalog_payload["stale_after_ms_by_metric"]["hashcost_eur_th_day__whatsminer__miner01"]
+        == 7_200_000
+    )
 
 
 def test_fixed_power_mode_sets_power_limit_when_summary_is_ready():

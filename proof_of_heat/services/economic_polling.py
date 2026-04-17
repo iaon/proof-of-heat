@@ -25,6 +25,8 @@ ECONOMICS_DEVICE_ID = "market"
 BITCOIN_BLOCKS_PER_DAY = 144.0
 USD_CURRENCY = "USD"
 MEMPOOL_CRYPTO_CURRENCY = "BTC"
+POWER_RATE_METRICS = ("power_rate", "power_rate_j_th")
+HASHCOST_CONFIGURED_DEVICE_TYPES = {"whatsminer"}
 
 
 @dataclass(frozen=True)
@@ -39,6 +41,21 @@ class EconomicsMetricNames:
     electricity_price_fiat_kwh: str
     hashcost_fiat_th_day: str
     hashcost_crypto_th_day: str
+
+
+@dataclass(frozen=True)
+class EconomicsMetricSource:
+    device_type: str
+    device_id: str
+
+
+@dataclass(frozen=True)
+class PowerRateMetricSource:
+    device_type: str
+    device_id: str
+    metric: str
+    value: float
+    source: str
 
 
 @dataclass(frozen=True)
@@ -103,7 +120,10 @@ class EconomicsPoller:
 
     def get_metadata(self) -> EconomicsMetadata:
         economics = self._settings.get("economics") if isinstance(self._settings, dict) else None
-        return build_economics_metadata(economics)
+        return build_economics_metadata(
+            economics,
+            hashcost_sources=self._collect_hashcost_sources(),
+        )
 
     def resolve_interval_seconds(self, economics: dict[str, Any] | None = None) -> int:
         economics_cfg = economics if isinstance(economics, dict) else self.load_settings()
@@ -169,8 +189,7 @@ class EconomicsPoller:
         network_hashrate_th_s: float | None = None
         avg_block_reward_crypto: float | None = None
         hashprice_crypto_th_day: float | None = None
-        power_rate_j_th: float | None = None
-        power_rate_source: str | None = None
+        power_rate_sources: list[PowerRateMetricSource] = []
 
         if isinstance(exchange_rate_cfg, dict):
             timeout_s = float(exchange_rate_cfg.get("timeout_s", 10.0) or 10.0)
@@ -283,15 +302,12 @@ class EconomicsPoller:
                             max_age_ms=hashprice_stale_ms,
                             reference_ts_ms=ts_ms,
                         )
-                    power_rate = _resolve_power_rate_metric(
+                    power_rate_sources = _resolve_power_rate_metrics(
                         conn=conn,
                         settings=self._settings,
                         max_age_ms=max(exchange_stale_ms, hashprice_stale_ms),
                         reference_ts_ms=ts_ms,
                     )
-                    if power_rate is not None:
-                        power_rate_j_th = power_rate["value"]
-                        power_rate_source = power_rate["source"]
 
         if crypto_usd is not None:
             metrics.append(
@@ -383,37 +399,72 @@ class EconomicsPoller:
             )
             payload["derived"][metric_names.electricity_price_fiat_kwh] = electricity_price_fiat_kwh
 
-        if electricity_price_fiat_kwh is not None and power_rate_j_th is not None:
-            hashcost_fiat_th_day = power_rate_j_th * 0.024 * electricity_price_fiat_kwh
-            metrics.append(
-                MetricSample(
-                    name=metric_names.hashcost_fiat_th_day,
-                    value=hashcost_fiat_th_day,
-                    unit=f"{fiat}/TH/day",
+        if electricity_price_fiat_kwh is not None and power_rate_sources:
+            power_rate_sources_by_device: dict[str, str] = {}
+            for power_rate_source in power_rate_sources:
+                hashcost_fiat_th_day = power_rate_source.value * 0.024 * electricity_price_fiat_kwh
+                hashcost_fiat_metric = _build_metric_source_name(
+                    metric_names.hashcost_fiat_th_day,
+                    device_type=power_rate_source.device_type,
+                    device_id=power_rate_source.device_id,
                 )
-            )
-            payload["derived"][metric_names.hashcost_fiat_th_day] = hashcost_fiat_th_day
-            payload["derived"]["power_rate_source"] = power_rate_source
-
-            if crypto_fiat is not None and crypto_fiat > 0:
-                hashcost_crypto_th_day = hashcost_fiat_th_day / crypto_fiat
                 metrics.append(
                     MetricSample(
-                        name=metric_names.hashcost_crypto_th_day,
-                        value=hashcost_crypto_th_day,
-                        unit=f"{crypto}/TH/day",
+                        name=hashcost_fiat_metric,
+                        value=hashcost_fiat_th_day,
+                        unit=f"{fiat}/TH/day",
                     )
                 )
-                payload["derived"][metric_names.hashcost_crypto_th_day] = hashcost_crypto_th_day
+                payload["derived"][hashcost_fiat_metric] = hashcost_fiat_th_day
+                power_rate_sources_by_device[
+                    f"{power_rate_source.device_type}:{power_rate_source.device_id}"
+                ] = power_rate_source.source
+
+                if crypto_fiat is not None and crypto_fiat > 0:
+                    hashcost_crypto_th_day = hashcost_fiat_th_day / crypto_fiat
+                    hashcost_crypto_metric = _build_metric_source_name(
+                        metric_names.hashcost_crypto_th_day,
+                        device_type=power_rate_source.device_type,
+                        device_id=power_rate_source.device_id,
+                    )
+                    metrics.append(
+                        MetricSample(
+                            name=hashcost_crypto_metric,
+                            value=hashcost_crypto_th_day,
+                            unit=f"{crypto}/TH/day",
+                        )
+                    )
+                    payload["derived"][hashcost_crypto_metric] = hashcost_crypto_th_day
+
+            payload["derived"]["power_rate_sources"] = power_rate_sources_by_device
+            if len(power_rate_sources_by_device) == 1:
+                payload["derived"]["power_rate_source"] = next(
+                    iter(power_rate_sources_by_device.values())
+                )
 
         return EconomicsPollResult(ts_ms=ts_ms, payload=payload, metrics=metrics)
 
+    def _collect_hashcost_sources(self) -> list[EconomicsMetricSource]:
+        sources: set[EconomicsMetricSource] = set(
+            _configured_hashcost_sources(self._settings)
+        )
+        if self._db_path and self._db_lock is not None and self._ensure_schema is not None:
+            with self._db_lock:
+                with connect_logged_sqlite(self._db_path, logger=logger) as conn:
+                    self._ensure_schema(conn)
+                    sources.update(_discover_hashcost_sources(conn, settings=self._settings))
+        return _sort_metric_sources(sources)
 
-def build_economics_metadata(economics: Any) -> EconomicsMetadata:
+
+def build_economics_metadata(
+    economics: Any,
+    hashcost_sources: list[EconomicsMetricSource] | None = None,
+) -> EconomicsMetadata:
     enabled = isinstance(economics, dict) and economics.get("enabled") is not False
     currencies = _resolve_currencies(economics)
     crypto = currencies["crypto"]
     fiat = currencies["fiat"]
+    metric_sources = _sort_metric_sources(hashcost_sources or [])
     if not crypto or not fiat:
         return EconomicsMetadata(
             enabled=enabled,
@@ -445,8 +496,6 @@ def build_economics_metadata(economics: Any) -> EconomicsMetadata:
         metric_names.hashprice_crypto_th_day,
         metric_names.hashprice_fiat_th_day,
         metric_names.electricity_price_fiat_kwh,
-        metric_names.hashcost_fiat_th_day,
-        metric_names.hashcost_crypto_th_day,
     ]
     if metric_names.exchange_rate_usd_fiat:
         current_metrics.insert(1, metric_names.exchange_rate_usd_fiat)
@@ -459,11 +508,32 @@ def build_economics_metadata(economics: Any) -> EconomicsMetadata:
         metric_names.hashprice_crypto_th_day: f"Hashprice in {crypto} per TH per day",
         metric_names.hashprice_fiat_th_day: f"Hashprice in {fiat} per TH per day",
         metric_names.electricity_price_fiat_kwh: f"Electricity price in {fiat} per kWh",
-        metric_names.hashcost_fiat_th_day: f"Electricity cost in {fiat} per TH per day",
-        metric_names.hashcost_crypto_th_day: f"Electricity cost in {crypto} per TH per day",
     }
     if metric_names.exchange_rate_usd_fiat:
         labels[metric_names.exchange_rate_usd_fiat] = f"USD to {fiat} exchange rate"
+
+    profitability_metrics = [
+        metric_names.hashprice_crypto_th_day,
+        metric_names.hashprice_fiat_th_day,
+    ]
+    for source in metric_sources:
+        hashcost_fiat_metric = _build_metric_source_name(
+            metric_names.hashcost_fiat_th_day,
+            device_type=source.device_type,
+            device_id=source.device_id,
+        )
+        hashcost_crypto_metric = _build_metric_source_name(
+            metric_names.hashcost_crypto_th_day,
+            device_type=source.device_type,
+            device_id=source.device_id,
+        )
+        source_label = f"{source.device_type}:{source.device_id}"
+        current_metrics.extend([hashcost_fiat_metric, hashcost_crypto_metric])
+        profitability_metrics.extend([hashcost_crypto_metric, hashcost_fiat_metric])
+        labels[hashcost_fiat_metric] = f"Electricity cost in {fiat} per TH per day ({source_label})"
+        labels[hashcost_crypto_metric] = (
+            f"Electricity cost in {crypto} per TH per day ({source_label})"
+        )
 
     presets = {
         "rates": {
@@ -480,12 +550,7 @@ def build_economics_metadata(economics: Any) -> EconomicsMetadata:
         },
         "profitability": {
             "label": "Profitability",
-            "metrics": _unique_metric_names([
-                metric_names.hashprice_crypto_th_day,
-                metric_names.hashprice_fiat_th_day,
-                metric_names.hashcost_crypto_th_day,
-                metric_names.hashcost_fiat_th_day,
-            ]),
+            "metrics": _unique_metric_names(profitability_metrics),
         },
         "market": {
             "label": "Market inputs",
@@ -515,8 +580,22 @@ def build_economics_metadata(economics: Any) -> EconomicsMetadata:
             metric_names.hashprice_crypto_th_day: hashprice_stale_ms,
             metric_names.hashprice_fiat_th_day: hashprice_stale_ms,
             metric_names.electricity_price_fiat_kwh: combined_stale_ms,
-            metric_names.hashcost_fiat_th_day: combined_stale_ms,
-            metric_names.hashcost_crypto_th_day: combined_stale_ms,
+            **{
+                _build_metric_source_name(
+                    metric_names.hashcost_fiat_th_day,
+                    device_type=source.device_type,
+                    device_id=source.device_id,
+                ): combined_stale_ms
+                for source in metric_sources
+            },
+            **{
+                _build_metric_source_name(
+                    metric_names.hashcost_crypto_th_day,
+                    device_type=source.device_type,
+                    device_id=source.device_id,
+                ): combined_stale_ms
+                for source in metric_sources
+            },
         },
     )
 
@@ -672,19 +751,13 @@ def _get_latest_metric_value(
     return sample_value
 
 
-def _resolve_power_rate_metric(
+def _resolve_power_rate_metrics(
     conn: sqlite3.Connection,
     settings: dict[str, Any],
     max_age_ms: int,
     reference_ts_ms: int,
-) -> dict[str, Any] | None:
-    devices = settings.get("devices") if isinstance(settings, dict) else None
-    whatsminers = devices.get("whatsminer") if isinstance(devices, dict) else None
-    configured_device_ids = {
-        str(device.get("device_id"))
-        for device in whatsminers or []
-        if isinstance(device, dict) and device.get("device_id") is not None
-    }
+) -> list[PowerRateMetricSource]:
+    configured_device_keys = _configured_device_keys(settings)
     rows = conn.execute(
         """
         SELECT device_type, device_id, metric, ts, value
@@ -693,12 +766,12 @@ def _resolve_power_rate_metric(
         ORDER BY ts DESC, id DESC
         """
     ).fetchall()
-    latest_by_source: dict[tuple[str, str], dict[str, Any]] = {}
+    latest_by_source: dict[tuple[str, str], PowerRateMetricSource] = {}
     for device_type, device_id, metric, sample_ts, sample_value in rows:
         source_key = (str(device_type), str(device_id))
         if source_key in latest_by_source:
             continue
-        if configured_device_ids and str(device_id) not in configured_device_ids:
+        if configured_device_keys and source_key not in configured_device_keys:
             continue
         sample_ts_int = _safe_int(sample_ts)
         sample_value_float = _safe_float(sample_value)
@@ -706,13 +779,81 @@ def _resolve_power_rate_metric(
             continue
         if reference_ts_ms - sample_ts_int > max_age_ms:
             continue
-        latest_by_source[source_key] = {
-            "value": sample_value_float,
-            "source": f"{device_type}:{device_id}:{metric}",
-        }
-    if len(latest_by_source) != 1:
-        return None
-    return next(iter(latest_by_source.values()))
+        latest_by_source[source_key] = PowerRateMetricSource(
+            device_type=str(device_type),
+            device_id=str(device_id),
+            metric=str(metric),
+            value=sample_value_float,
+            source=f"{device_type}:{device_id}:{metric}",
+        )
+    return [latest_by_source[key] for key in sorted(latest_by_source)]
+
+
+def _configured_device_keys(settings: dict[str, Any]) -> set[tuple[str, str]]:
+    devices = settings.get("devices") if isinstance(settings, dict) else None
+    if not isinstance(devices, dict):
+        return set()
+    configured_device_keys: set[tuple[str, str]] = set()
+    for device_type, configured_devices in devices.items():
+        if not isinstance(configured_devices, list):
+            continue
+        for device in configured_devices:
+            if not isinstance(device, dict) or device.get("device_id") is None:
+                continue
+            configured_device_keys.add((str(device_type), str(device.get("device_id"))))
+    return configured_device_keys
+
+
+def _configured_hashcost_sources(settings: dict[str, Any]) -> list[EconomicsMetricSource]:
+    devices = settings.get("devices") if isinstance(settings, dict) else None
+    if not isinstance(devices, dict):
+        return []
+    sources: list[EconomicsMetricSource] = []
+    for device_type in HASHCOST_CONFIGURED_DEVICE_TYPES:
+        configured_devices = devices.get(device_type)
+        if not isinstance(configured_devices, list):
+            continue
+        for device in configured_devices:
+            if not isinstance(device, dict) or device.get("device_id") is None:
+                continue
+            sources.append(
+                EconomicsMetricSource(
+                    device_type=str(device_type),
+                    device_id=str(device.get("device_id")),
+                )
+            )
+    return _sort_metric_sources(sources)
+
+
+def _discover_hashcost_sources(
+    conn: sqlite3.Connection,
+    settings: dict[str, Any],
+) -> list[EconomicsMetricSource]:
+    configured_device_keys = _configured_device_keys(settings)
+    rows = conn.execute(
+        """
+        SELECT device_type, device_id
+        FROM metrics
+        WHERE metric IN ('power_rate', 'power_rate_j_th')
+        UNION
+        SELECT device_type, device_id
+        FROM metric_rollups
+        WHERE metric IN ('power_rate', 'power_rate_j_th')
+        ORDER BY device_type, device_id
+        """
+    ).fetchall()
+    sources: list[EconomicsMetricSource] = []
+    for device_type, device_id in rows:
+        source_key = (str(device_type), str(device_id))
+        if configured_device_keys and source_key not in configured_device_keys:
+            continue
+        sources.append(
+            EconomicsMetricSource(
+                device_type=source_key[0],
+                device_id=source_key[1],
+            )
+        )
+    return _sort_metric_sources(sources)
 
 
 def _extract_mempool_usd_price(payload: dict[str, Any]) -> float | None:
@@ -779,6 +920,36 @@ def _parse_time_of_day_to_minutes(value: str) -> int | None:
 
 def _sanitize_currency_code(value: str) -> str:
     return "".join(ch for ch in value.strip() if ch.isalnum()).lower() or "value"
+
+
+def _sanitize_metric_source_part(value: str, fallback: str) -> str:
+    normalized: list[str] = []
+    pending_separator = False
+    for ch in value.strip().lower():
+        if ch.isalnum():
+            if pending_separator and normalized:
+                normalized.append("_")
+            normalized.append(ch)
+            pending_separator = False
+            continue
+        pending_separator = True
+    result = "".join(normalized).strip("_")
+    return result or fallback
+
+
+def _build_metric_source_name(metric_name: str, device_type: str, device_id: str) -> str:
+    type_suffix = _sanitize_metric_source_part(device_type, fallback="device")
+    id_suffix = _sanitize_metric_source_part(device_id, fallback="id")
+    return f"{metric_name}__{type_suffix}__{id_suffix}"
+
+
+def _sort_metric_sources(
+    sources: list[EconomicsMetricSource] | set[EconomicsMetricSource],
+) -> list[EconomicsMetricSource]:
+    return sorted(
+        set(sources),
+        key=lambda source: (source.device_type, source.device_id),
+    )
 
 
 def _unique_metric_names(values: list[str]) -> list[str]:
