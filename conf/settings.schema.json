@@ -1023,6 +1023,19 @@
           "title": "Device Id",
           "type": "integer"
         },
+        "refresh_interval": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Refresh Interval"
+        },
         "type": {
           "anyOf": [
             {
@@ -1106,6 +1119,19 @@
           ],
           "default": null,
           "title": "Port"
+        },
+        "refresh_interval": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Refresh Interval"
         },
         "timeout": {
           "anyOf": [

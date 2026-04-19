@@ -230,7 +230,50 @@ def test_example_settings_yaml_is_valid():
     parsed = parse_settings_yaml(raw_yaml)
 
     assert parsed["devices"]["met_no"][0]["device_id"] == 2001
+    assert parsed["devices"]["met_no"][0]["refresh_interval"] == 180
+    assert parsed["devices"]["open_meteo"][0]["refresh_interval"] == 180
     assert parsed["devices"]["whatsminer"][0]["device_id"] == "miner01"
+    assert parsed["devices"]["whatsminer"][0]["refresh_interval"] == 60
+
+
+def test_parse_settings_yaml_accepts_per_device_refresh_interval_for_polled_devices():
+    parsed = parse_settings_yaml(
+        """
+integrations:
+  zont_api:
+    - id: 1
+      headers:
+        X-ZONT-Client: "client"
+      login: "login"
+      password: "password"
+devices:
+  refresh_interval: 30
+  open_meteo:
+    - device_id: 1001
+      type: "virtual"
+      refresh_interval: 180
+  met_no:
+    - device_id: 2001
+      type: "virtual"
+      refresh_interval: 240
+  zont:
+    - integration_id: 1
+      device_id: 12000
+      serial: "0000000000"
+      refresh_interval: 300
+  whatsminer:
+    - device_id: "miner01"
+      host: "example.com"
+      login: "login"
+      password: "password"
+      refresh_interval: 90
+"""
+    )
+
+    assert parsed["devices"]["open_meteo"][0]["refresh_interval"] == 180
+    assert parsed["devices"]["met_no"][0]["refresh_interval"] == 240
+    assert parsed["devices"]["zont"][0]["refresh_interval"] == 300
+    assert parsed["devices"]["whatsminer"][0]["refresh_interval"] == 90
 
 
 def test_parse_settings_yaml_rejects_unknown_top_level_fields():

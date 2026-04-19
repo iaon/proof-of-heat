@@ -208,8 +208,8 @@ Supported device lists:
 Common conventions:
 
 - `device_id` is the logical identifier used in stored metrics and config references.
+- Any polled device entry may override the default scheduler interval with `refresh_interval`.
 - Weather device IDs should be integers.
-- ZONT devices can override polling interval with `refresh_interval`.
 - ZONT devices may omit `integration_id`; in that case the first configured `integrations.zont_api` entry is used.
 - WhatsMiner devices use `host`, `login`, and `password` to talk to the miner API.
 - WhatsMiner devices may define `timeout` in seconds for miner API calls.

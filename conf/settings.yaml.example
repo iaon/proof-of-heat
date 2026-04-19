@@ -15,9 +15,11 @@ devices:
   open_meteo:
     - device_id: 1001
       type: "virtual"
+      refresh_interval: 180
   met_no:
     - device_id: 2001
       type: "virtual"
+      refresh_interval: 180
   zont:
     - integration_id: 1
       device_id: 12000
@@ -28,6 +30,7 @@ devices:
       login: "login"
       password: "pass"
       host: "example.com"
+      refresh_interval: 60
       port: 1111
       max_power: null
       min_power: 1000

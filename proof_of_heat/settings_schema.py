@@ -101,6 +101,7 @@ class IntegrationsSettings(SettingsSchemaModel):
 class WeatherDeviceSettings(SettingsSchemaModel):
     device_id: int
     type: str | None = None
+    refresh_interval: int | None = Field(default=None, gt=0)
 
     @field_validator("type")
     @classmethod
@@ -134,6 +135,7 @@ class WhatsminerDeviceSettings(SettingsSchemaModel):
     login: str
     password: str
     host: str
+    refresh_interval: int | None = Field(default=None, gt=0)
     port: int | None = Field(default=None, gt=0)
     timeout: int | None = Field(default=None, gt=0)
     max_power: int | None = Field(default=None, gt=0)
