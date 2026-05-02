@@ -274,6 +274,23 @@ def make_request(path: str, root_path: str = "") -> Request:
     return Request(scope, receive)
 
 
+NAV_HREFS = (
+    "/config",
+    "/economics",
+    "/metrics",
+    "/heating-curve",
+    "/devices",
+    "/docs",
+    "/redoc",
+)
+
+
+def assert_nav_links(markup: str, root_path: str = ""):
+    assert 'class="page-nav"' in markup
+    for href in NAV_HREFS:
+        assert f'href="{root_path}{href}"' in markup
+
+
 def test_health(tmp_path, monkeypatch):
     routes = build_routes(tmp_path, monkeypatch)
     payload = routes["/health"]()
@@ -329,10 +346,7 @@ def test_ui_respects_root_path(tmp_path, monkeypatch):
     ui_resp = routes["/"](make_request("/", root_path="/app"))
     assert ui_resp.status_code == 200
     ui_markup = ui_resp.body.decode()
-    assert 'href="/app/config"' in ui_markup
-    assert 'href="/app/economics"' in ui_markup
-    assert 'href="/app/metrics"' in ui_markup
-    assert 'href="/app/heating-curve"' in ui_markup
+    assert_nav_links(ui_markup, root_path="/app")
     assert 'id="control-inputs"' in ui_markup
     assert 'const rootPath = "/app";' in ui_markup
     assert 'Version 1.2.3-testsha' in ui_markup
@@ -340,12 +354,14 @@ def test_ui_respects_root_path(tmp_path, monkeypatch):
     config_resp = routes["/config"](make_request("/config", root_path="/app"))
     assert config_resp.status_code == 200
     config_markup = config_resp.body.decode()
+    assert_nav_links(config_markup, root_path="/app")
     assert 'const rootPath = "/app";' in config_markup
     assert 'Version 1.2.3-testsha' in config_markup
 
     metrics_resp = routes["/metrics"](make_request("/metrics", root_path="/app"))
     assert metrics_resp.status_code == 200
     metrics_markup = metrics_resp.body.decode()
+    assert_nav_links(metrics_markup, root_path="/app")
     assert 'const rootPath = "/app";' in metrics_markup
     assert 'data-preset="economics-rates"' not in metrics_markup
     assert 'data-hours="1"' in metrics_markup
@@ -356,6 +372,7 @@ def test_ui_respects_root_path(tmp_path, monkeypatch):
     economics_resp = routes["/economics"](make_request("/economics", root_path="/app"))
     assert economics_resp.status_code == 200
     economics_markup = economics_resp.body.decode()
+    assert_nav_links(economics_markup, root_path="/app")
     assert 'const rootPath = "/app";' in economics_markup
     assert 'data-preset="rates"' in economics_markup
     assert 'id="economics-current"' in economics_markup
@@ -367,11 +384,30 @@ def test_ui_respects_root_path(tmp_path, monkeypatch):
     heating_curve_resp = routes["/heating-curve"](make_request("/heating-curve", root_path="/app"))
     assert heating_curve_resp.status_code == 200
     heating_curve_markup = heating_curve_resp.body.decode()
+    assert_nav_links(heating_curve_markup, root_path="/app")
     assert 'const rootPath = "/app";' in heating_curve_markup
     assert 'Ft = S * (Tt - Ct)^exponent + O + Tt' in heating_curve_markup
     assert 'id="target-room-temp-c"' in heating_curve_markup
     assert 'id="offset"' in heating_curve_markup
     assert 'Version 1.2.3-testsha' in heating_curve_markup
+
+    devices_resp = routes["/devices"](make_request("/devices", root_path="/app"))
+    assert devices_resp.status_code == 200
+    devices_markup = devices_resp.body.decode()
+    assert_nav_links(devices_markup, root_path="/app")
+    assert 'Version 1.2.3-testsha' in devices_markup
+
+    docs_resp = routes["/docs"](make_request("/docs", root_path="/app"))
+    assert docs_resp.status_code == 200
+    docs_markup = docs_resp.body.decode()
+    assert_nav_links(docs_markup, root_path="/app")
+    assert "url: '/app/openapi.json'" in docs_markup
+
+    redoc_resp = routes["/redoc"](make_request("/redoc", root_path="/app"))
+    assert redoc_resp.status_code == 200
+    redoc_markup = redoc_resp.body.decode()
+    assert_nav_links(redoc_markup, root_path="/app")
+    assert 'spec-url="/app/openapi.json"' in redoc_markup
 
 
 def test_status_snapshot(tmp_path, monkeypatch):
@@ -443,7 +479,7 @@ def test_devices_view_lists_virtual_weather_devices(tmp_path, monkeypatch):
         parsed_settings=parsed_settings,
         latest_payloads=latest_payloads,
     )
-    resp = routes["/devices"]()
+    resp = routes["/devices"](make_request("/devices"))
     body = resp.body.decode()
 
     assert "open_meteo 1001 (virtual)" in body

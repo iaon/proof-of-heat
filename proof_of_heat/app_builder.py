@@ -11,8 +11,10 @@ from typing import Any, Callable
 
 try:  # pragma: no cover - imported lazily for endpoint typing when FastAPI is available
     from fastapi import Request
+    from fastapi.openapi.docs import get_redoc_html, get_swagger_ui_html
 except Exception:  # pragma: no cover - diagnostic fallback path
     Request = Any  # type: ignore[misc,assignment]
+    get_redoc_html = get_swagger_ui_html = None  # type: ignore[assignment]
 
 TEMPLATES_DIR = Path(__file__).with_name("templates")
 STATIC_DIR = Path(__file__).with_name("static")
@@ -26,6 +28,37 @@ HEATING_CURVE_DEFAULTS: dict[str, Any] = {
     "min_supply_temp_c": 25.0,
     "max_supply_temp_c": 60.0,
 }
+
+NAV_LINKS_MARKUP = """<nav class="page-nav" aria-label="Page navigation">
+        <a href="__ROOT_PATH__/config">Edit configuration</a>
+        <span aria-hidden="true">·</span>
+        <a href="__ROOT_PATH__/economics">Economics</a>
+        <span aria-hidden="true">·</span>
+        <a href="__ROOT_PATH__/metrics">Metrics chart</a>
+        <span aria-hidden="true">·</span>
+        <a href="__ROOT_PATH__/heating-curve">Heating curve</a>
+        <span aria-hidden="true">·</span>
+        <a href="__ROOT_PATH__/devices">Devices</a>
+        <span aria-hidden="true">·</span>
+        <a href="__ROOT_PATH__/docs">API docs</a>
+        <span aria-hidden="true">·</span>
+        <a href="__ROOT_PATH__/redoc">ReDoc</a>
+    </nav>"""
+
+DOCS_NAV_STYLE = """<style>
+    .page-nav {
+        font-family: system-ui, sans-serif;
+        line-height: 1.6;
+        margin: 16px 24px;
+    }
+    .page-nav a {
+        color: #2563eb;
+    }
+    .page-nav span {
+        color: #64748b;
+        margin: 0 4px;
+    }
+</style>"""
 
 
 def load_template(name: str) -> str:
@@ -214,7 +247,13 @@ def create_app(
         history_file=history_file,
     )
 
-    app = deps.fastapi_cls(title="proof-of-heat MVP", version=app_version, root_path=root_path)
+    app = deps.fastapi_cls(
+        title="proof-of-heat MVP",
+        version=app_version,
+        root_path=root_path,
+        docs_url=None,
+        redoc_url=None,
+    )
     app.mount("/static", deps.static_files_cls(directory=STATIC_DIR), name="static")
 
     settings_data = deps.parse_settings_yaml(deps.load_settings_yaml())
@@ -250,14 +289,34 @@ def create_app(
 
     app.router.lifespan_context = lifespan
 
+    def render_navigation_markup(request_root_path: str) -> str:
+        return NAV_LINKS_MARKUP.replace(
+            "__ROOT_PATH__",
+            escape(request_root_path, quote=True),
+        )
+
     def render_markup(markup: str, request: Request) -> str:
         request_root_path = request.scope.get("root_path", "").rstrip("/")
         return (
-            markup.replace("__ROOT_PATH_JSON__", json.dumps(request_root_path))
+            markup.replace("__NAV_LINKS__", render_navigation_markup(request_root_path))
+            .replace("__ROOT_PATH_JSON__", json.dumps(request_root_path))
             .replace("__ROOT_PATH__", escape(request_root_path, quote=True))
             .replace("__STATIC_VERSION__", STATIC_VERSION)
             .replace("__APP_VERSION__", escape(app_version, quote=True))
         )
+
+    def render_docs_markup(markup: str, request: Request) -> str:
+        request_root_path = request.scope.get("root_path", "").rstrip("/")
+        rendered = markup.replace(
+            "<body>",
+            f"<body>\n    {render_navigation_markup(request_root_path)}",
+            1,
+        )
+        return rendered.replace("</head>", f"{DOCS_NAV_STYLE}\n    </head>", 1)
+
+    def openapi_url_for_request(request: Request) -> str:
+        request_root_path = request.scope.get("root_path", "").rstrip("/")
+        return f"{request_root_path}{app.openapi_url}"
 
     ui_markup = load_template("ui.html")
     metrics_markup = load_template("metrics.html")
@@ -271,6 +330,30 @@ def create_app(
     @app.get("/debug/routes")
     def debug_routes() -> dict[str, Any]:
         return {"routes": sorted({route.path for route in app.router.routes})}
+
+    @app.get("/docs", response_class=deps.html_response_cls, include_in_schema=False)
+    def swagger_docs(request: Request) -> Any:
+        if get_swagger_ui_html is None:
+            return deps.html_response_cls(
+                render_markup("<!doctype html><h1>API docs</h1>__NAV_LINKS__", request)
+            )
+        response = get_swagger_ui_html(
+            openapi_url=openapi_url_for_request(request),
+            title=f"{app.title} - API docs",
+        )
+        return deps.html_response_cls(render_docs_markup(response.body.decode(), request))
+
+    @app.get("/redoc", response_class=deps.html_response_cls, include_in_schema=False)
+    def redoc_docs(request: Request) -> Any:
+        if get_redoc_html is None:
+            return deps.html_response_cls(
+                render_markup("<!doctype html><h1>ReDoc</h1>__NAV_LINKS__", request)
+            )
+        response = get_redoc_html(
+            openapi_url=openapi_url_for_request(request),
+            title=f"{app.title} - ReDoc",
+        )
+        return deps.html_response_cls(render_docs_markup(response.body.decode(), request))
 
     @app.get("/", response_class=deps.html_response_cls, include_in_schema=False)
     @app.get("/ui", response_class=deps.html_response_cls, include_in_schema=False)
@@ -523,7 +606,7 @@ def create_app(
 
     @app.get("/devices", response_class=deps.html_response_cls, include_in_schema=False)
     @app.get("/devices/", response_class=deps.html_response_cls, include_in_schema=False)
-    def devices_view() -> Any:
+    def devices_view(request: Request) -> Any:
         raw_yaml = deps.load_settings_yaml()
         parsed = deps.parse_settings_yaml(raw_yaml)
         latest_payloads = device_poller.get_latest_payloads()
@@ -553,13 +636,10 @@ def create_app(
         page_markup = render_template_text(
             "devices.html",
             {
-                "__ROOT_PATH__": escape(root_path, quote=True),
-                "__STATIC_VERSION__": STATIC_VERSION,
-                "__APP_VERSION__": escape(app_version, quote=True),
                 "__DEVICE_CARDS__": card_markup
                 or '<p class="muted">No devices configured.</p>',
             },
         )
-        return deps.html_response_cls(page_markup)
+        return deps.html_response_cls(render_markup(page_markup, request))
 
     return app
