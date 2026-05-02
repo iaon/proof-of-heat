@@ -25,6 +25,7 @@ devices:
       device_id: 12000
       serial: "0000000000"
       refresh_interval: 180
+      stale_after: 600
   whatsminer:
     - device_id: "miner01"
       login: "login"

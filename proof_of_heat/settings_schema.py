@@ -11,6 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 BASE_DIR = Path(__file__).resolve().parents[1]
 SETTINGS_SCHEMA_FILE = BASE_DIR / "conf" / "settings.schema.json"
 TIME_OF_DAY_PATTERN = re.compile(r"^(?:[01]\d|2[0-3]):[0-5]\d$")
+DEFAULT_ZONT_STALE_AFTER_SECONDS = 600
 
 
 class SettingsValidationError(ValueError):
@@ -116,6 +117,7 @@ class ZontDeviceSettings(SettingsSchemaModel):
     device_id: int | str
     serial: str
     refresh_interval: int | None = Field(default=None, gt=0)
+    stale_after: int | None = Field(default=DEFAULT_ZONT_STALE_AFTER_SECONDS, ge=0)
 
     @field_validator("serial")
     @classmethod

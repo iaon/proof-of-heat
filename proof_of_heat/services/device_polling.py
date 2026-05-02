@@ -35,6 +35,7 @@ logger = logging.getLogger("proof_of_heat.device_polling")
 CONTROL_INPUTS_DEVICE_TYPE = "control_inputs"
 CONTROL_DECISIONS_DEVICE_TYPE = "control_decisions"
 CONTROL_DEVICE_ID = "main"
+DEFAULT_ZONT_STALE_AFTER_SECONDS = 600
 
 @dataclass(frozen=True)
 class DeviceKey:
@@ -1821,12 +1822,92 @@ class DevicePoller:
             return None
         if reference_ts_ms - sample_ts > max_age_ms:
             return None
+        if self._is_source_stale_by_provider_metadata(
+            conn=conn,
+            device_type=str(device_type),
+            device_id=str(device_id),
+            metric=str(metric),
+            reference_ts_ms=reference_ts_ms,
+        ):
+            return None
 
         correction = self._safe_float(spec.get("correction")) or 0.0
         return {
             "value": sample_value + correction,
             "source": f"{device_type}:{device_id}:{metric}",
         }
+
+    def _is_source_stale_by_provider_metadata(
+        self,
+        conn: sqlite3.Connection,
+        device_type: str,
+        device_id: str,
+        metric: str,
+        reference_ts_ms: int,
+    ) -> bool:
+        if device_type != "zont":
+            return False
+
+        timestamp_metric = self._zont_last_value_time_metric(metric)
+        if timestamp_metric is None:
+            return False
+
+        row = conn.execute(
+            """
+            SELECT value
+            FROM metrics
+            WHERE device_type = :device_type
+              AND device_id = :device_id
+              AND metric = :metric
+            ORDER BY ts DESC
+            LIMIT 1
+            """,
+            {
+                "device_type": device_type,
+                "device_id": device_id,
+                "metric": timestamp_metric,
+            },
+        ).fetchone()
+        if row is None:
+            return False
+
+        value_time_ms = self._normalize_epoch_ms(row[0])
+        if value_time_ms is None:
+            return True
+
+        stale_after_ms = self._resolve_zont_stale_after_ms(device_id)
+        return reference_ts_ms - value_time_ms > stale_after_ms
+
+    def _zont_last_value_time_metric(self, metric: str) -> str | None:
+        suffix = "_last_value"
+        if not metric.endswith(suffix):
+            return None
+        return f"{metric[: -len(suffix)]}_last_value_time"
+
+    def _resolve_zont_stale_after_ms(self, device_id: str) -> int:
+        devices = self._settings.get("devices") if isinstance(self._settings, dict) else None
+        zont_devices = devices.get("zont") if isinstance(devices, dict) else None
+        if isinstance(zont_devices, list):
+            for device in zont_devices:
+                if not isinstance(device, dict):
+                    continue
+                configured_id = device.get("device_id")
+                configured_serial = device.get("serial")
+                if str(configured_id) != device_id and str(configured_serial) != device_id:
+                    continue
+                stale_after = self._safe_int(device.get("stale_after"))
+                if stale_after is not None and stale_after >= 0:
+                    return stale_after * 1000
+                break
+        return DEFAULT_ZONT_STALE_AFTER_SECONDS * 1000
+
+    def _normalize_epoch_ms(self, value: Any) -> int | None:
+        timestamp = self._safe_float(value)
+        if timestamp is None:
+            return None
+        if timestamp > 10_000_000_000:
+            return int(timestamp)
+        return int(timestamp * 1000)
 
     def _ensure_schema(self, conn: sqlite3.Connection) -> None:
         if self._schema_ready:

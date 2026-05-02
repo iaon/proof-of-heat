@@ -261,6 +261,7 @@ devices:
       device_id: 12000
       serial: "0000000000"
       refresh_interval: 300
+      stale_after: 900
   whatsminer:
     - device_id: "miner01"
       host: "example.com"
@@ -273,6 +274,7 @@ devices:
     assert parsed["devices"]["open_meteo"][0]["refresh_interval"] == 180
     assert parsed["devices"]["met_no"][0]["refresh_interval"] == 240
     assert parsed["devices"]["zont"][0]["refresh_interval"] == 300
+    assert parsed["devices"]["zont"][0]["stale_after"] == 900
     assert parsed["devices"]["whatsminer"][0]["refresh_interval"] == 90
 
 

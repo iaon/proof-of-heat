@@ -47,6 +47,7 @@ devices:
       device_id: 12000
       serial: "0000000000"
       refresh_interval: 180
+      stale_after: 600
 
   whatsminer:
     - device_id: "miner01"
@@ -211,6 +212,7 @@ Common conventions:
 - Any polled device entry may override the default scheduler interval with `refresh_interval`.
 - Weather device IDs should be integers.
 - ZONT devices may omit `integration_id`; in that case the first configured `integrations.zont_api` entry is used.
+- ZONT devices may define `stale_after` in seconds. The default is `600`. For ZONT thermometer metrics ending in `_last_value`, the app checks the matching `_last_value_time` metric and ignores the value after this age so `control_inputs` can fall back to the next source.
 - WhatsMiner devices use `host`, `login`, and `password` to talk to the miner API.
 - WhatsMiner devices may define `timeout` in seconds for miner API calls.
 - WhatsMiner devices may define `max_power` in watts. This is an optional upper bound reserved for future control logic; it is currently stored in config and passed into the plugin, but not enforced yet.
@@ -308,6 +310,7 @@ Priority is defined by the order of items in `sources`.
 Freshness rule:
 
 - A source is considered available only when its latest metric sample is not older than `max_age_seconds`.
+- ZONT thermometer sources also respect the device-level `stale_after` value when a matching `_last_value_time` metric is available.
 
 Current behavior:
 

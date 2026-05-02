@@ -1240,6 +1240,19 @@
         "serial": {
           "title": "Serial",
           "type": "string"
+        },
+        "stale_after": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": 600,
+          "title": "Stale After"
         }
       },
       "required": [

@@ -723,6 +723,67 @@ def test_control_inputs_ignore_stale_metrics_and_default_power_to_zero(tmp_path)
     assert row == (None, 0.0, "[]")
 
 
+def test_control_inputs_skip_zont_last_value_when_provider_timestamp_is_stale(tmp_path):
+    metric = "io_thermometers_state_600ff17fdcc0c856f06a7c3d_last_value"
+    timestamp_metric = "io_thermometers_state_600ff17fdcc0c856f06a7c3d_last_value_time"
+    reference_ts_ms = 2_000_000_000_000
+    stale_value_time_s = (reference_ts_ms // 1000) - 601
+    settings = {
+        "devices": {
+            "zont": [
+                {
+                    "device_id": "12000",
+                    "serial": "SN-NEEDED",
+                }
+            ]
+        },
+        "control_inputs": {
+            "max_age_seconds": 3600,
+            "indoor_temp": {
+                "select": "highest_priority_available",
+                "sources": [
+                    {
+                        "device_type": "zont",
+                        "device_id": "12000",
+                        "metric": metric,
+                    },
+                    {
+                        "device_type": "open_meteo",
+                        "device_id": "1001",
+                        "metric": "temperature_2m",
+                    },
+                ],
+            },
+        },
+    }
+
+    poller = DevicePoller(settings, data_dir=tmp_path)
+    with sqlite3.connect(tmp_path / "telemetry.sqlite3") as conn:
+        poller._ensure_tables(conn)
+        conn.executemany(
+            """
+            INSERT INTO metrics (ts, device_type, device_id, metric, value, unit)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            [
+                (reference_ts_ms, "zont", "12000", metric, 22.0, "celsius"),
+                (reference_ts_ms, "zont", "12000", timestamp_metric, stale_value_time_s, None),
+                (reference_ts_ms, "open_meteo", "1001", "temperature_2m", 19.0, "celsius"),
+            ],
+        )
+        poller._refresh_control_inputs(conn=conn, ts_ms=reference_ts_ms)
+        row = conn.execute(
+            """
+            SELECT indoor_temp, indoor_temp_source
+            FROM control_inputs
+            ORDER BY id DESC
+            LIMIT 1
+            """
+        ).fetchone()
+
+    assert row == (19.0, "open_meteo:1001:temperature_2m")
+
+
 def test_control_decisions_are_persisted_and_written_to_metrics(tmp_path):
     poller = DevicePoller({}, data_dir=tmp_path)
 
