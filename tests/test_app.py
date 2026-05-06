@@ -314,6 +314,7 @@ def test_status_page_served_without_navigation_links(tmp_path, monkeypatch):
     assert "Статус отопления" in markup
     assert 'const rootPath = "/app";' in markup
     assert 'id="status-refresh"' in markup
+    assert 'id="status-error"' in markup
     assert 'class="page-nav"' not in markup
     assert "<a " not in markup
     assert "Version 1.2.3-testsha" in markup
@@ -368,7 +369,9 @@ def test_ui_respects_root_path(tmp_path, monkeypatch):
     assert status_page_resp.status_code == 200
     status_page_markup = status_page_resp.body.decode()
     assert 'const rootPath = "/app";' in status_page_markup
-    assert 'id="weather-value"' in status_page_markup
+    assert 'id="weather-temp"' in status_page_markup
+    assert '/app/static/css/status_page.css' in status_page_markup
+    assert '/app/static/js/status_page.js' in status_page_markup
     assert 'class="page-nav"' not in status_page_markup
     assert 'Version 1.2.3-testsha' in status_page_markup
 

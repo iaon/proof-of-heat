@@ -1,20 +1,38 @@
 const apiUrl = (path) => `${rootPath}${path}`;
 const refreshMs = 15000;
 
-const els = {
-    refresh: document.getElementById("status-refresh"),
-    updated: document.getElementById("status-updated"),
-    weatherIcon: document.getElementById("weather-icon"),
-    weatherValue: document.getElementById("weather-value"),
-    weatherMeta: document.getElementById("weather-meta"),
-    indoorValue: document.getElementById("indoor-value"),
-    indoorMeta: document.getElementById("indoor-meta"),
-    targetValue: document.getElementById("target-value"),
-    targetMeta: document.getElementById("target-meta"),
-    supplyValue: document.getElementById("supply-value"),
-    supplyMeta: document.getElementById("supply-meta"),
-    powerValue: document.getElementById("power-value"),
-    powerMeta: document.getElementById("power-meta"),
+const refreshButton = document.getElementById("status-refresh");
+const errorEl = document.getElementById("status-error");
+
+const weatherCodes = {
+    0: ["☀️", "Ясно"],
+    1: ["🌤️", "Преимущественно ясно"],
+    2: ["⛅", "Переменная облачность"],
+    3: ["☁️", "Пасмурно"],
+    45: ["🌫️", "Туман"],
+    48: ["🌫️", "Изморозь"],
+    51: ["🌦️", "Слабая морось"],
+    53: ["🌦️", "Морось"],
+    55: ["🌧️", "Сильная морось"],
+    56: ["🌧️", "Ледяная морось"],
+    57: ["🌧️", "Сильная ледяная морось"],
+    61: ["🌧️", "Небольшой дождь"],
+    63: ["🌧️", "Дождь"],
+    65: ["🌧️", "Сильный дождь"],
+    66: ["🌧️", "Ледяной дождь"],
+    67: ["🌧️", "Сильный ледяной дождь"],
+    71: ["🌨️", "Небольшой снег"],
+    73: ["🌨️", "Снег"],
+    75: ["❄️", "Сильный снег"],
+    77: ["❄️", "Снежные зерна"],
+    80: ["🌦️", "Кратковременный дождь"],
+    81: ["🌧️", "Ливень"],
+    82: ["⛈️", "Сильный ливень"],
+    85: ["🌨️", "Снегопад"],
+    86: ["❄️", "Сильный снегопад"],
+    95: ["⛈️", "Гроза"],
+    96: ["⛈️", "Гроза с градом"],
+    99: ["⛈️", "Сильная гроза с градом"],
 };
 
 const numberFormatter = new Intl.NumberFormat("ru-RU", {
@@ -25,29 +43,52 @@ const wattsFormatter = new Intl.NumberFormat("ru-RU", {
     maximumFractionDigits: 0,
 });
 
-function isNumber(value) {
-    return typeof value === "number" && Number.isFinite(value);
+function setText(id, value) {
+    const element = document.getElementById(id);
+    if (element) {
+        element.textContent = value;
+    }
+}
+
+function asNumber(value) {
+    if (value === null || value === undefined || value === "") {
+        return null;
+    }
+    const number = Number(value);
+    return Number.isFinite(number) ? number : null;
+}
+
+function formatNumber(value, maximumFractionDigits = 1) {
+    const number = asNumber(value);
+    if (number === null) {
+        return "н/д";
+    }
+    return new Intl.NumberFormat("ru-RU", {
+        maximumFractionDigits,
+    }).format(number);
 }
 
 function formatTemp(value) {
-    return isNumber(value) ? `${numberFormatter.format(value)} °C` : "—";
+    const number = asNumber(value);
+    return number === null ? "н/д" : `${numberFormatter.format(number)} °C`;
 }
 
 function formatPower(value) {
-    if (!isNumber(value)) {
-        return "—";
+    const watts = asNumber(value);
+    if (watts === null) {
+        return ["н/д", "текущее потребление"];
     }
-    if (Math.abs(value) >= 1000) {
-        return `${numberFormatter.format(value / 1000)} кВт`;
+    if (Math.abs(watts) >= 1000) {
+        return [`${formatNumber(watts / 1000, 2)} кВт`, `${wattsFormatter.format(watts)} Вт`];
     }
-    return `${wattsFormatter.format(value)} Вт`;
+    return [`${wattsFormatter.format(watts)} Вт`, "текущее потребление"];
 }
 
 function formatDateTime(value) {
     if (!value) {
         return null;
     }
-    const date = typeof value === "number" ? new Date(value) : new Date(value);
+    const date = new Date(value);
     if (Number.isNaN(date.getTime())) {
         return null;
     }
@@ -69,29 +110,18 @@ function providerLabel(provider) {
     return provider || "погода";
 }
 
-function weatherIcon(code) {
-    if (!isNumber(code)) {
-        return "🌤️";
+function describeWeather(weather) {
+    if (!weather) {
+        return ["🌤️", "Погода недоступна"];
     }
-    if (code === 0) {
-        return "☀️";
+    const code = asNumber(weather.weather_code);
+    if (code !== null && weatherCodes[code]) {
+        return weatherCodes[code];
     }
-    if (code >= 1 && code <= 3) {
-        return "⛅";
+    if (asNumber(weather.temperature_c) !== null) {
+        return ["🌡️", "Текущие условия"];
     }
-    if (code === 45 || code === 48) {
-        return "🌫️";
-    }
-    if ((code >= 51 && code <= 67) || (code >= 80 && code <= 82)) {
-        return "🌧️";
-    }
-    if (code >= 71 && code <= 77) {
-        return "🌨️";
-    }
-    if (code >= 95) {
-        return "⛈️";
-    }
-    return "🌤️";
+    return ["🌤️", "Погода недоступна"];
 }
 
 function sourceText(source) {
@@ -105,75 +135,65 @@ function powerSourceText(sources) {
     return "Источник не выбран";
 }
 
-function weatherMetaText(weather) {
-    if (!weather) {
-        return "Нет данных";
-    }
-    if (weather.error) {
-        return `Ошибка: ${weather.error}`;
-    }
-    const parts = [];
-    if (weather.location_name) {
-        parts.push(weather.location_name);
-    }
-    if (isNumber(weather.humidity_percent)) {
-        parts.push(`влажность ${wattsFormatter.format(weather.humidity_percent)}%`);
-    }
-    if (isNumber(weather.wind_speed)) {
-        parts.push(`ветер ${numberFormatter.format(weather.wind_speed)} м/с`);
-    }
-    const observedAt = formatDateTime(weather.observed_at || weather.polled_at);
-    if (observedAt) {
-        parts.push(observedAt);
-    }
-    if (parts.length === 0) {
-        return providerLabel(weather.provider);
-    }
-    return `${providerLabel(weather.provider)} · ${parts.join(" · ")}`;
+function renderWeather(weather) {
+    const [icon, summary] = describeWeather(weather);
+    setText("weather-icon", icon);
+    setText("weather-temp", weather ? formatTemp(weather.temperature_c) : "н/д");
+    setText("weather-summary", weather?.error ? `Ошибка: ${weather.error}` : summary);
+
+    const location = weather?.location_name || "Локация не задана";
+    setText("weather-location", `${location} · ${providerLabel(weather?.provider)}`);
+
+    const windSpeed = asNumber(weather?.wind_speed);
+    setText("weather-wind", windSpeed === null ? "Ветер: н/д" : `Ветер: ${numberFormatter.format(windSpeed)} м/с`);
+
+    const humidity = asNumber(weather?.humidity_percent);
+    setText("weather-humidity", humidity === null ? "Влажность: н/д" : `Влажность: ${wattsFormatter.format(humidity)}%`);
+
+    const observedAt = formatDateTime(weather?.observed_at || weather?.polled_at);
+    setText("weather-observed", observedAt ? `Наблюдение: ${observedAt}` : "Наблюдение: н/д");
 }
 
-function updateStatus(data) {
-    const weather = data.weather || {};
-    els.weatherIcon.textContent = weatherIcon(weather.weather_code);
-    els.weatherValue.textContent = formatTemp(weather.temperature_c);
-    els.weatherMeta.textContent = weatherMetaText(weather);
+function renderStatus(data) {
+    renderWeather(data.weather || {});
 
-    els.indoorValue.textContent = formatTemp(data.indoor_temperature_c);
-    els.indoorMeta.textContent = sourceText(data.sources?.indoor_temperature);
+    setText("indoor-temp", formatTemp(data.indoor_temperature_c));
+    setText("indoor-note", sourceText(data.sources?.indoor_temperature));
 
-    els.targetValue.textContent = formatTemp(data.target_temperature_c);
-    els.targetMeta.textContent = data.mode_label ? `Режим: ${data.mode_label}` : "Целевая температура";
+    setText("target-temp", formatTemp(data.target_temperature_c));
+    setText("target-note", data.mode_label ? `Режим: ${data.mode_label}` : "целевая температура");
 
-    els.supplyValue.textContent = formatTemp(data.supply_temperature_c);
-    els.supplyMeta.textContent = sourceText(data.sources?.supply_temperature);
+    setText("supply-temp", formatTemp(data.supply_temperature_c));
+    setText("supply-note", sourceText(data.sources?.supply_temperature));
 
-    els.powerValue.textContent = formatPower(data.power_w);
-    els.powerMeta.textContent = isNumber(data.power_w)
-        ? `${wattsFormatter.format(data.power_w)} Вт · ${powerSourceText(data.sources?.power)}`
-        : powerSourceText(data.sources?.power);
+    const [powerValue, powerNote] = formatPower(data.power_w);
+    setText("power", powerValue);
+    setText("power-note", asNumber(data.power_w) === null ? powerSourceText(data.sources?.power) : `${powerNote} · ${powerSourceText(data.sources?.power)}`);
 
     const updatedAt = formatDateTime(data.updated_at_ms);
-    els.updated.textContent = updatedAt ? `Обновлено ${updatedAt}` : "Нет свежей телеметрии";
+    setText("status-updated", updatedAt ? `Обновлено ${updatedAt}` : "Нет свежей телеметрии");
 }
 
 async function loadStatus() {
-    els.refresh.classList.add("is-loading");
-    els.refresh.disabled = true;
+    refreshButton.classList.add("is-loading");
+    refreshButton.disabled = true;
+    errorEl.hidden = true;
     try {
         const response = await fetch(apiUrl("/api/status-summary"));
         if (!response.ok) {
             throw new Error(`HTTP ${response.status}`);
         }
-        const data = await response.json();
-        updateStatus(data);
+        renderStatus(await response.json());
     } catch (err) {
-        els.updated.textContent = `Не удалось обновить статус: ${err}`;
+        errorEl.textContent = `Не удалось обновить статус: ${err}`;
+        errorEl.hidden = false;
+        setText("status-updated", "Обновлено: ошибка");
     } finally {
-        els.refresh.classList.remove("is-loading");
-        els.refresh.disabled = false;
+        refreshButton.classList.remove("is-loading");
+        refreshButton.disabled = false;
     }
 }
 
-els.refresh.addEventListener("click", loadStatus);
+refreshButton.addEventListener("click", loadStatus);
 loadStatus();
 setInterval(loadStatus, refreshMs);
