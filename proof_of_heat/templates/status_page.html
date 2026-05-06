@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="ru">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Статус отопления</title>
+    <link rel="stylesheet" href="__ROOT_PATH__/static/css/app.css?v=__STATIC_VERSION__" />
+    <link rel="stylesheet" href="__ROOT_PATH__/static/css/status.css?v=__STATIC_VERSION__" />
+</head>
+<body class="status-body">
+    <main class="status-page">
+        <header class="status-header">
+            <div>
+                <p class="status-kicker">proof-of-heat</p>
+                <h1>Статус отопления</h1>
+            </div>
+            <button id="status-refresh" class="status-refresh" type="button" title="Обновить">
+                <span aria-hidden="true">↻</span>
+                <span>Обновить</span>
+            </button>
+        </header>
+
+        <section class="weather-panel" aria-label="Текущая погода">
+            <div class="weather-icon" id="weather-icon" aria-hidden="true">🌤️</div>
+            <div class="weather-main">
+                <p class="panel-label">Снаружи</p>
+                <div class="weather-value" id="weather-temp">н/д</div>
+                <p class="weather-summary" id="weather-summary">Погода недоступна</p>
+            </div>
+            <div class="weather-extra">
+                <span id="weather-location">Локация не задана</span>
+                <span id="weather-wind">Ветер: н/д</span>
+            </div>
+        </section>
+
+        <section class="status-grid" aria-label="Показатели отопления">
+            <article class="status-card accent-room">
+                <div class="card-icon" aria-hidden="true">🏠</div>
+                <div>
+                    <p class="card-label">Внутри</p>
+                    <div class="card-value" id="indoor-temp">н/д</div>
+                    <p class="card-note" id="indoor-note">температура помещения</p>
+                </div>
+            </article>
+
+            <article class="status-card accent-target">
+                <div class="card-icon" aria-hidden="true">🎯</div>
+                <div>
+                    <p class="card-label">Цель</p>
+                    <div class="card-value" id="target-temp">н/д</div>
+                    <p class="card-note">целевая температура</p>
+                </div>
+            </article>
+
+            <article class="status-card accent-supply">
+                <div class="card-icon" aria-hidden="true">♨️</div>
+                <div>
+                    <p class="card-label">Теплоноситель</p>
+                    <div class="card-value" id="supply-temp">н/д</div>
+                    <p class="card-note">подача отопления</p>
+                </div>
+            </article>
+
+            <article class="status-card accent-power">
+                <div class="card-icon" aria-hidden="true">⚡</div>
+                <div>
+                    <p class="card-label">Мощность</p>
+                    <div class="card-value" id="power">н/д</div>
+                    <p class="card-note" id="power-note">текущее потребление</p>
+                </div>
+            </article>
+        </section>
+
+        <p id="status-error" class="status-error" hidden></p>
+        <footer class="status-footer">
+            <span id="status-updated">Обновление...</span>
+            <span>Version __APP_VERSION__</span>
+        </footer>
+    </main>
+
+    <script>
+        const rootPath = __ROOT_PATH_JSON__;
+    </script>
+    <script src="__ROOT_PATH__/static/js/status.js?v=__STATIC_VERSION__"></script>
+</body>
+</html>

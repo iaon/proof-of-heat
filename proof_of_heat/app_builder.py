@@ -128,6 +128,15 @@ def _coerce_float(value: Any, default: float) -> float:
         return default
 
 
+def _coerce_optional_float(value: Any) -> float | None:
+    try:
+        if value is None:
+            return None
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def _coerce_bool(value: Any, default: bool) -> bool:
     if isinstance(value, bool):
         return value
@@ -217,6 +226,64 @@ def _load_weather_devices(settings_data: dict[str, Any]) -> list[dict[str, Any]]
     devices = _load_configured_devices(settings_data, "open_meteo")
     devices.extend(_load_configured_devices(settings_data, "met_no"))
     return devices
+
+
+def _resolve_target_indoor_temp_c(
+    settings_data: dict[str, Any],
+    control_decision: dict[str, Any] | None,
+    fallback: Any,
+) -> float | None:
+    heating_mode = settings_data.get("heating_mode") if isinstance(settings_data, dict) else None
+    if isinstance(heating_mode, dict):
+        params = heating_mode.get("params")
+        if isinstance(params, dict):
+            configured = _coerce_optional_float(params.get("target_room_temp_c"))
+            if configured is not None:
+                return configured
+
+    if isinstance(control_decision, dict):
+        resolved = _coerce_optional_float(control_decision.get("resolved_target_room_temp_c"))
+        if resolved is not None:
+            return resolved
+
+    return _coerce_optional_float(fallback)
+
+
+def _extract_weather_temperature_c(current: dict[str, Any]) -> float | None:
+    for key in ("temperature", "temperature_2m", "air_temperature"):
+        value = _coerce_optional_float(current.get(key))
+        if value is not None:
+            return value
+    return None
+
+
+def _extract_weather_wind_speed(current: dict[str, Any]) -> float | None:
+    for key in ("windspeed", "wind_speed"):
+        value = _coerce_optional_float(current.get(key))
+        if value is not None:
+            return value
+    return None
+
+
+def _summarize_weather_payload(payload: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not isinstance(payload, dict):
+        return None
+    current = payload.get("current")
+    current_data = current if isinstance(current, dict) else {}
+    units = payload.get("units")
+    location = payload.get("location")
+    return {
+        "provider": payload.get("provider"),
+        "device_id": payload.get("device_id"),
+        "type": payload.get("type"),
+        "location_name": location.get("name") if isinstance(location, dict) else None,
+        "temperature_c": _extract_weather_temperature_c(current_data),
+        "wind_speed": _extract_weather_wind_speed(current_data),
+        "wind_speed_unit": units.get("windspeed") or units.get("wind_speed") if isinstance(units, dict) else None,
+        "weather_code": _coerce_optional_float(current_data.get("weathercode")),
+        "timestamp": payload.get("timestamp"),
+        "polled_at": payload.get("polled_at"),
+    }
 
 
 def create_app(
@@ -319,9 +386,27 @@ def create_app(
         return f"{request_root_path}{app.openapi_url}"
 
     ui_markup = load_template("ui.html")
+    status_page_markup = load_template("status_page.html")
     metrics_markup = load_template("metrics.html")
     economics_markup = load_template("economics.html")
     heating_curve_markup = load_template("heating_curve.html")
+
+    def get_latest_weather_payload(
+        parsed: dict[str, Any],
+        latest_payloads: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        for source in _load_weather_devices(parsed):
+            latest = latest_payloads.get(f"{source['device_type']}:{source['device_id']}")
+            if not latest:
+                continue
+            payload = latest.get("payload")
+            if not isinstance(payload, dict):
+                continue
+            return {
+                **payload,
+                "polled_at": latest.get("timestamp"),
+            }
+        return None
 
     @app.get("/health")
     def health() -> dict[str, str]:
@@ -359,6 +444,11 @@ def create_app(
     @app.get("/ui", response_class=deps.html_response_cls, include_in_schema=False)
     def ui(request: Request) -> Any:
         return deps.html_response_cls(render_markup(ui_markup, request))
+
+    @app.get("/status-page", response_class=deps.html_response_cls, include_in_schema=False)
+    @app.get("/status-page/", response_class=deps.html_response_cls, include_in_schema=False)
+    def status_page(request: Request) -> Any:
+        return deps.html_response_cls(render_markup(status_page_markup, request))
 
     @app.get("/config", response_class=deps.html_response_cls, include_in_schema=False)
     @app.get("/config/", response_class=deps.html_response_cls, include_in_schema=False)
@@ -490,6 +580,40 @@ def create_app(
     def get_latest_control_decision() -> dict[str, Any]:
         return {"data": device_poller.get_latest_control_decision()}
 
+    @app.get("/api/status-page/current")
+    @app.get("/api/status-page/current/")
+    def get_status_page_current() -> dict[str, Any]:
+        raw_yaml = deps.load_settings_yaml()
+        parsed = deps.parse_settings_yaml(raw_yaml)
+        latest_payloads = device_poller.get_latest_payloads()
+        control_inputs = device_poller.get_latest_control_inputs()
+        control_decision = device_poller.get_latest_control_decision()
+        control_data = control_inputs if isinstance(control_inputs, dict) else {}
+        decision_data = control_decision if isinstance(control_decision, dict) else None
+
+        return {
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "weather": _summarize_weather_payload(
+                get_latest_weather_payload(parsed, latest_payloads)
+            ),
+            "indoor_temp_c": _coerce_optional_float(control_data.get("indoor_temp")),
+            "target_indoor_temp_c": _resolve_target_indoor_temp_c(
+                parsed,
+                decision_data,
+                config.target_temperature_c,
+            ),
+            "supply_temp_c": _coerce_optional_float(control_data.get("supply_temp")),
+            "power_w": _coerce_optional_float(control_data.get("power")),
+            "control_inputs_ts": control_data.get("ts"),
+            "control_decision_ts": decision_data.get("ts") if decision_data else None,
+            "sources": {
+                "indoor_temp": control_data.get("indoor_temp_source"),
+                "outdoor_temp": control_data.get("outdoor_temp_source"),
+                "supply_temp": control_data.get("supply_temp_source"),
+                "power": control_data.get("power_sources"),
+            },
+        }
+
     @app.get("/api/economics/current")
     @app.get("/api/economics/current/")
     def get_latest_economics() -> dict[str, Any]:
@@ -553,24 +677,11 @@ def create_app(
         raw_yaml = deps.load_settings_yaml()
         parsed = deps.parse_settings_yaml(raw_yaml)
         latest_payloads = device_poller.get_latest_payloads()
-        weather_payload: dict[str, Any] | None = None
-        for source in _load_weather_devices(parsed):
-            latest = latest_payloads.get(f"{source['device_type']}:{source['device_id']}")
-            if not latest:
-                continue
-            payload = latest.get("payload")
-            if not isinstance(payload, dict):
-                continue
-            weather_payload = {
-                **payload,
-                "polled_at": latest.get("timestamp"),
-            }
-            break
         return {
             "mode": config.mode,
             "mode_label": deps.human_readable_mode(config.mode),
             "target_temperature_c": config.target_temperature_c,
-            "weather": weather_payload,
+            "weather": get_latest_weather_payload(parsed, latest_payloads),
             "latest_snapshot": {
                 "timestamp": snapshot.timestamp,
                 "indoor_temp_c": snapshot.indoor_temp_c,

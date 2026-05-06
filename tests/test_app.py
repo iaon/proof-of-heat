@@ -351,6 +351,18 @@ def test_ui_respects_root_path(tmp_path, monkeypatch):
     assert 'const rootPath = "/app";' in ui_markup
     assert 'Version 1.2.3-testsha' in ui_markup
 
+    status_page_resp = routes["/status-page"](make_request("/status-page", root_path="/app"))
+    assert status_page_resp.status_code == 200
+    status_page_markup = status_page_resp.body.decode()
+    assert 'class="page-nav"' not in status_page_markup
+    assert 'href="/app/config"' not in status_page_markup
+    assert 'href="/app/docs"' not in status_page_markup
+    assert 'const rootPath = "/app";' in status_page_markup
+    assert '/app/static/css/status.css' in status_page_markup
+    assert '/app/static/js/status.js' in status_page_markup
+    assert 'id="status-refresh"' in status_page_markup
+    assert 'Version 1.2.3-testsha' in status_page_markup
+
     config_resp = routes["/config"](make_request("/config", root_path="/app"))
     assert config_resp.status_code == 200
     config_markup = config_resp.body.decode()
@@ -523,6 +535,76 @@ def test_control_decisions_api_returns_latest_payload(tmp_path, monkeypatch):
     assert payload["data"] is not None
     assert payload["data"]["mode"] == "room_target"
     assert payload["data"]["resolved_target_supply_temp_c"] == 42.5
+
+
+def test_status_page_current_api_returns_dashboard_payload(tmp_path, monkeypatch):
+    parsed_settings = {
+        "devices": {
+            "open_meteo": [
+                {
+                    "device_id": 1001,
+                    "type": "virtual",
+                }
+            ]
+        },
+        "heating_mode": {
+            "enabled": True,
+            "type": "room_target",
+            "params": {"target_room_temp_c": 22.0},
+        },
+    }
+    latest_payloads = {
+        "open_meteo:1001": {
+            "timestamp": "2026-03-29T10:15:00",
+            "payload": {
+                "provider": "open_meteo",
+                "device_id": "1001",
+                "type": "virtual",
+                "location": {"name": "Moscow"},
+                "current": {
+                    "temperature": 4.2,
+                    "windspeed": 3.5,
+                    "weathercode": 2,
+                },
+                "units": {"temperature": "°C", "windspeed": "km/h"},
+            },
+        }
+    }
+
+    routes = build_routes(
+        tmp_path,
+        monkeypatch,
+        parsed_settings=parsed_settings,
+        latest_payloads=latest_payloads,
+    )
+    DummyDevicePoller.latest_control_inputs = {
+        "ts": 123,
+        "indoor_temp": 21.5,
+        "indoor_temp_source": "zont:12000:room_temp",
+        "outdoor_temp": 3.0,
+        "outdoor_temp_source": "open_meteo:1001:temperature",
+        "supply_temp": 41.25,
+        "supply_temp_source": "zont:12000:boiler_feed_temp",
+        "power": 1350.0,
+        "power_sources": ["whatsminer:miner01:power"],
+    }
+    DummyDevicePoller.latest_control_decision = {
+        "ts": 456,
+        "resolved_target_room_temp_c": 21.0,
+    }
+
+    payload = routes["/api/status-page/current"]()
+
+    assert payload["weather"]["provider"] == "open_meteo"
+    assert payload["weather"]["location_name"] == "Moscow"
+    assert payload["weather"]["temperature_c"] == 4.2
+    assert payload["weather"]["wind_speed"] == 3.5
+    assert payload["weather"]["weather_code"] == 2.0
+    assert payload["indoor_temp_c"] == 21.5
+    assert payload["target_indoor_temp_c"] == 22.0
+    assert payload["supply_temp_c"] == 41.25
+    assert payload["power_w"] == 1350.0
+    assert payload["sources"]["power"] == ["whatsminer:miner01:power"]
 
 
 def test_database_vacuum_api_returns_status_and_supports_force_run(tmp_path, monkeypatch):
