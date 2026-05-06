@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="ru">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Статус отопления</title>
+    <link rel="stylesheet" href="__ROOT_PATH__/static/css/app.css?v=__STATIC_VERSION__" />
+    <link rel="stylesheet" href="__ROOT_PATH__/static/css/status_page.css?v=__STATIC_VERSION__" />
+</head>
+<body class="status-body">
+    <main class="status-shell" aria-live="polite">
+        <header class="status-header">
+            <div>
+                <div class="brand-row">
+                    <span class="brand-icon" aria-hidden="true">🔥</span>
+                    <span>Proof of Heat</span>
+                </div>
+                <h1>Статус отопления</h1>
+                <p id="status-updated" class="status-updated">Обновление...</p>
+            </div>
+            <button id="status-refresh" class="refresh-button" type="button" title="Обновить" aria-label="Обновить">↻</button>
+        </header>
+
+        <section class="status-grid status-grid-main" aria-label="Главные показатели">
+            <article class="status-tile status-tile-weather">
+                <div class="tile-head">
+                    <span id="weather-icon" class="tile-icon" aria-hidden="true">🌤️</span>
+                    <span class="tile-label">Погода</span>
+                </div>
+                <div id="weather-value" class="tile-value">—</div>
+                <div id="weather-meta" class="tile-meta">Нет данных</div>
+            </article>
+
+            <article class="status-tile status-tile-indoor">
+                <div class="tile-head">
+                    <span id="indoor-icon" class="tile-icon" aria-hidden="true">🏠</span>
+                    <span class="tile-label">Внутри</span>
+                </div>
+                <div id="indoor-value" class="tile-value tile-value-large">—</div>
+                <div id="indoor-meta" class="tile-meta">Текущая температура</div>
+            </article>
+        </section>
+
+        <section class="status-grid status-grid-secondary" aria-label="Параметры отопления">
+            <article class="status-tile">
+                <div class="tile-head">
+                    <span id="target-icon" class="tile-icon" aria-hidden="true">🎯</span>
+                    <span class="tile-label">Цель внутри</span>
+                </div>
+                <div id="target-value" class="tile-value">—</div>
+                <div id="target-meta" class="tile-meta">Целевая температура</div>
+            </article>
+
+            <article class="status-tile">
+                <div class="tile-head">
+                    <span id="supply-icon" class="tile-icon" aria-hidden="true">♨️</span>
+                    <span class="tile-label">Теплоноситель</span>
+                </div>
+                <div id="supply-value" class="tile-value">—</div>
+                <div id="supply-meta" class="tile-meta">Температура подачи</div>
+            </article>
+
+            <article class="status-tile">
+                <div class="tile-head">
+                    <span id="power-icon" class="tile-icon" aria-hidden="true">⚡</span>
+                    <span class="tile-label">Мощность</span>
+                </div>
+                <div id="power-value" class="tile-value">—</div>
+                <div id="power-meta" class="tile-meta">Потребление сейчас</div>
+            </article>
+        </section>
+    </main>
+
+    <script>
+        const rootPath = __ROOT_PATH_JSON__;
+    </script>
+    <footer class="page-footer status-footer muted">Version __APP_VERSION__</footer>
+    <script src="__ROOT_PATH__/static/js/status_page.js?v=__STATIC_VERSION__"></script>
+</body>
+</html>
