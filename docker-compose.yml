@@ -14,3 +14,4 @@ services:
       # Example for reverse proxy prefix deployment:
       - ROOT_PATH=/poh
     command: ["python", "-m", "proof_of_heat.main"]
+    restart: unless-stopped

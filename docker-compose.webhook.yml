@@ -19,3 +19,4 @@ services:
       - "-verbose"
       - "-port=9000"
     working_dir: ${PROJECT_ROOT:-/home/iaon/git/proof-of-heat}
+    restart: unless-stopped
