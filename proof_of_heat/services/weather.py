@@ -2,11 +2,10 @@ from __future__ import annotations
 
 from typing import Any, Dict
 
-import httpx
+from proof_of_heat.services.http_client import create_http_client
 
 OPEN_METEO_URL = "https://api.open-meteo.com/v1/forecast"
 MET_NO_URL = "https://api.met.no/weatherapi/locationforecast/2.0/compact"
-MET_NO_USER_AGENT = "proof-of-heat/0.1 (contact: weather@example.com)"
 
 
 def fetch_open_meteo_weather(
@@ -21,7 +20,7 @@ def fetch_open_meteo_weather(
         "current_weather": "true",
         "timezone": timezone,
     }
-    with httpx.Client(timeout=timeout_s) as client:
+    with create_http_client(timeout_s=timeout_s) as client:
         response = client.get(OPEN_METEO_URL, params=params)
         response.raise_for_status()
         payload = response.json()
@@ -61,8 +60,7 @@ def fetch_met_no_weather(
     params: Dict[str, Any] = {"lat": latitude, "lon": longitude}
     if altitude_m is not None:
         params["altitude"] = altitude_m
-    headers = {"User-Agent": MET_NO_USER_AGENT}
-    with httpx.Client(timeout=timeout_s, headers=headers) as client:
+    with create_http_client(timeout_s=timeout_s) as client:
         response = client.get(MET_NO_URL, params=params)
         response.raise_for_status()
         payload = response.json()

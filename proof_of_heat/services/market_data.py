@@ -3,7 +3,7 @@ from __future__ import annotations
 import xml.etree.ElementTree as ET
 from typing import Any, Dict, Iterable
 
-import httpx
+from proof_of_heat.services.http_client import create_http_client
 
 MEMPOOL_API_URL = "https://mempool.space/api"
 CBR_DAILY_RATES_URL = "https://www.cbr.ru/scripts/XML_daily.asp"
@@ -11,7 +11,7 @@ CBR_BASE_CURRENCY = "RUB"
 
 
 def fetch_mempool_prices(timeout_s: float = 10.0) -> Dict[str, Any]:
-    with httpx.Client(timeout=timeout_s) as client:
+    with create_http_client(timeout_s=timeout_s) as client:
         response = client.get(f"{MEMPOOL_API_URL}/v1/prices")
         response.raise_for_status()
         payload = response.json()
@@ -23,7 +23,7 @@ def fetch_mempool_prices(timeout_s: float = 10.0) -> Dict[str, Any]:
 
 
 def fetch_mempool_hashrate(time_period: str = "1m", timeout_s: float = 10.0) -> Dict[str, Any]:
-    with httpx.Client(timeout=timeout_s) as client:
+    with create_http_client(timeout_s=timeout_s) as client:
         response = client.get(f"{MEMPOOL_API_URL}/v1/mining/hashrate/{time_period}")
         response.raise_for_status()
         payload = response.json()
@@ -35,7 +35,7 @@ def fetch_mempool_hashrate(time_period: str = "1m", timeout_s: float = 10.0) -> 
 
 
 def fetch_mempool_reward_stats(block_count: int = 144, timeout_s: float = 10.0) -> Dict[str, Any]:
-    with httpx.Client(timeout=timeout_s) as client:
+    with create_http_client(timeout_s=timeout_s) as client:
         response = client.get(f"{MEMPOOL_API_URL}/v1/mining/reward-stats/{block_count}")
         response.raise_for_status()
         payload = response.json()
@@ -52,7 +52,7 @@ def fetch_cbr_daily_rates(codes: Iterable[str] | None = None, timeout_s: float =
         for code in (codes or [])
         if str(code).strip()
     }
-    with httpx.Client(timeout=timeout_s) as client:
+    with create_http_client(timeout_s=timeout_s) as client:
         response = client.get(CBR_DAILY_RATES_URL)
         response.raise_for_status()
         payload = response.text

@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 
 from proof_of_heat.services import device_polling
 from proof_of_heat.services import economic_polling
+from proof_of_heat.services import http_client
 from proof_of_heat.services.device_polling import DevicePoller
 from proof_of_heat.services.metrics import MetricSample
 
@@ -460,8 +461,9 @@ def test_zont_device_selected_by_serial_and_metrics_persisted(monkeypatch, tmp_p
             }
 
     class _FakeClient:
-        def __init__(self, timeout):
+        def __init__(self, timeout, headers):
             self.timeout = timeout
+            assert headers["User-Agent"] == http_client.USER_AGENT
 
         def __enter__(self):
             return self
@@ -476,7 +478,7 @@ def test_zont_device_selected_by_serial_and_metrics_persisted(monkeypatch, tmp_p
             assert auth == ("login", "password")
             return _FakeResponse()
 
-    monkeypatch.setattr(device_polling.httpx, "Client", _FakeClient)
+    monkeypatch.setattr(http_client.httpx, "Client", _FakeClient)
 
     poller = DevicePoller(settings, data_dir=tmp_path)
     payload = poller.poll_zont_device(settings["devices"]["zont"][0])

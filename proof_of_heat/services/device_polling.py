@@ -13,7 +13,6 @@ from pathlib import Path
 from threading import Lock
 from typing import Any, Callable
 
-import httpx
 from apscheduler.executors.pool import ThreadPoolExecutor
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.interval import IntervalTrigger
@@ -25,6 +24,7 @@ from proof_of_heat.services.economic_polling import (
     ECONOMICS_DEVICE_TYPE,
     EconomicsPoller,
 )
+from proof_of_heat.services.http_client import create_http_client
 from proof_of_heat.services.metrics import MetricSample
 from proof_of_heat.services.sqlite_logging import connect_logged_sqlite
 from proof_of_heat.services.weather import fetch_met_no_weather, fetch_open_meteo_weather
@@ -740,7 +740,7 @@ class DevicePoller:
 
         timeout_s = float(device.get("timeout_s", 15.0) or 15.0)
         try:
-            with httpx.Client(timeout=timeout_s) as client:
+            with create_http_client(timeout_s=timeout_s) as client:
                 response = client.post(
                     "https://my.zont.online/api/devices",
                     headers={
