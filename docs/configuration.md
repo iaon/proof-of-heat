@@ -252,14 +252,20 @@ Each `rollups` entry contains:
 
 Current behavior:
 
-- `raw_events` retention runs once on startup and then repeats every `interval_seconds`.
+- `raw_events` retention is queued in the background after startup initialization and then repeats every `interval_seconds`.
 - Rows are deleted when `raw_events.ts < now - retention_seconds`.
-- `metrics` retention runs once on startup and then repeats every `interval_seconds`.
+- `metrics` retention is queued in the background after startup initialization and then repeats every `interval_seconds`.
 - Raw metric rows older than `raw_retention_seconds` are compacted into `metric_rollups`.
 - The app stores one representative point per `device_type`, `device_id`, `metric`, and rollup bucket.
 - After a bucket is written to `metric_rollups`, covered raw rows are deleted from `metrics`.
 - Expired rollup rows are deleted when `metric_rollups.ts < now - rollup.retention_seconds`.
-- Metric reads merge recent raw rows from `metrics` with older compacted rows from `metric_rollups`.
+- Metric reads merge remaining raw rows with compacted rows, including old raw data awaiting background processing. During a partially processed bucket, both its representative point and remaining raw points can be visible.
+- Maintenance jobs use a single background worker. A queued job is not discarded because another maintenance job took longer than expected.
+- Retention processes at most 2,000 source rows per transaction, releases the database lock, and waits 50 ms between full deletion batches or metric batches. Shutdown interrupts processing between transactions; subsequent runs resume from remaining rows.
+- Each metric batch atomically saves representative points and deletes its source rows. Source timestamps and IDs in rollups preserve `first`/`last` selection across batches and restarts. Older databases receive these nullable columns automatically; legacy representatives without source metadata are retained for `first`/`any` and replaced by a new sample for `last`.
+- The `metrics(ts)` index is created by background maintenance on its first run. Building it on a large existing database still requires a one-time scan and can temporarily delay database requests.
+- INFO logs report schema/index preparation and total retention duration and row counts; DEBUG logs report individual batches. `rolled_up_rows` counts bucket writes attempted across batches, not distinct buckets.
+- `control_inputs` and `control_decisions` do not currently have retention policies.
 
 `maintenance.vacuum` fields:
 

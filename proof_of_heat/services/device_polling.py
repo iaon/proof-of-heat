@@ -7,10 +7,12 @@ import shutil
 import socket
 import sqlite3
 import subprocess
+import time
+from contextlib import closing
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from threading import Lock
+from threading import Event, Lock
 from typing import Any, Callable
 
 from apscheduler.executors.pool import ThreadPoolExecutor
@@ -36,6 +38,8 @@ CONTROL_INPUTS_DEVICE_TYPE = "control_inputs"
 CONTROL_DECISIONS_DEVICE_TYPE = "control_decisions"
 CONTROL_DEVICE_ID = "main"
 DEFAULT_ZONT_STALE_AFTER_SECONDS = 600
+RETENTION_BATCH_SIZE = 2000
+RETENTION_BATCH_PAUSE_SECONDS = 0.05
 
 @dataclass(frozen=True)
 class DeviceKey:
@@ -90,6 +94,7 @@ class DevicePoller:
         self._settings = settings
         self._lock = Lock()
         self._db_lock = Lock()
+        self._maintenance_stop = Event()
         self._latest_payloads: dict[DeviceKey, dict[str, Any]] = {}
         self._metric_catalog_cache: dict[str, dict[str, set[str]]] | None = None
         self._scheduler: BackgroundScheduler | None = None
@@ -102,7 +107,8 @@ class DevicePoller:
             ensure_schema=self._ensure_schema,
         )
 
-    def start(self) -> None:
+    def start(self, *, paused: bool = False) -> None:
+        self._maintenance_stop.clear()
         devices = self._settings.get("devices", {}) if isinstance(self._settings, dict) else {}
         if not isinstance(devices, dict):
             logger.warning("Devices settings are not a mapping; polling disabled")
@@ -188,7 +194,9 @@ class DevicePoller:
             return
 
         executor = ThreadPoolExecutor(max_workers=max(1, len(poll_jobs) + len(maintenance_jobs)))
-        self._scheduler = BackgroundScheduler(executors={"default": executor})
+        self._scheduler = BackgroundScheduler(executors={
+            "default": executor, "maintenance": ThreadPoolExecutor(max_workers=1),
+        })
 
         for key, device, handler in poll_jobs:
             if key.device_type == ECONOMICS_DEVICE_TYPE:
@@ -220,6 +228,11 @@ class DevicePoller:
                 trigger=trigger,
                 id=job.job_id,
                 name=f"Maintenance {job.job_id}",
+                executor="maintenance",
+                max_instances=1,
+                coalesce=True,
+                misfire_grace_time=None,
+                **({"next_run_time": datetime.now(timezone.utc)} if job.run_on_start else {}),
                 replace_existing=True,
             )
             logger.info(
@@ -228,27 +241,28 @@ class DevicePoller:
                 job.interval_seconds,
             )
 
-        self._scheduler.start()
         for key, device, handler in poll_jobs:
             self._poll_device(key, device, handler)
-        for job in maintenance_jobs:
-            if not job.run_on_start:
-                continue
-            try:
-                job.handler()
-            except Exception:  # pragma: no cover - defensive logging
-                logger.exception("Maintenance job failed during initial run: %s", job.job_id)
+        self._scheduler.start(paused=paused)
+
+    def resume(self) -> None:
+        if self._scheduler:
+            self._scheduler.resume()
 
     def shutdown(self) -> None:
+        self._maintenance_stop.set()
         if self._scheduler:
-            self._scheduler.shutdown(wait=False)
+            # Finish the current transaction before reusing settings or closing the app.
+            self._scheduler.shutdown(wait=True)
             self._scheduler = None
 
     def update_settings(self, settings: dict[str, Any]) -> None:
+        was_running = self._scheduler is not None
+        if was_running:
+            self.shutdown()
         self._settings = settings
         self._economics_poller.update_settings(settings)
-        if self._scheduler:
-            self.shutdown()
+        if was_running:
             self.start()
 
     def _upsert_metric_catalog_entry(
@@ -382,119 +396,28 @@ class DevicePoller:
 
         policy = self._load_metrics_retention_policy()
         params: dict[str, Any] = {
-            "device_type": device_type,
-            "device_id": device_id,
-            "metric": metric,
+            "device_type": device_type, "device_id": device_id, "metric": metric,
         }
-        clauses = [
-            "device_type = :device_type",
-            "device_id = :device_id",
-            "metric = :metric",
-        ]
+        clauses = ["device_type = :device_type", "device_id = :device_id", "metric = :metric"]
         if start_ms is not None:
             clauses.append("ts >= :start_ms")
             params["start_ms"] = start_ms
         if end_ms is not None:
             clauses.append("ts <= :end_ms")
             params["end_ms"] = end_ms
-        metric_queries: list[tuple[str, dict[str, Any]]] = []
-        if policy is None:
-            where_clause = " AND ".join(clauses)
-            metric_queries.append(
-                (
-                    f"""
-                    SELECT ts, value
-                    FROM metrics
-                    WHERE {where_clause}
-                    ORDER BY ts
-                    """,
-                    params,
-                )
-            )
-        else:
-            now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
-            raw_cutoff_ms = now_ms - (policy.raw_retention_seconds * 1000)
-
-            rollup_params = {
-                **params,
-                "resolution_seconds": policy.rollup.resolution_seconds,
-            }
-            rollup_clauses = [
-                "resolution_seconds = :resolution_seconds",
-                "device_type = :device_type",
-                "device_id = :device_id",
-                "metric = :metric",
-            ]
-            if start_ms is not None:
-                rollup_clauses.append("ts >= :start_ms")
-            rollup_end_ms = raw_cutoff_ms - 1
-            if end_ms is not None:
-                rollup_end_ms = min(rollup_end_ms, end_ms)
-            if start_ms is None or start_ms <= rollup_end_ms:
-                rollup_params["rollup_end_ms"] = rollup_end_ms
-                rollup_clauses.append("ts <= :rollup_end_ms")
-                metric_queries.append(
-                    (
-                        f"""
-                        SELECT ts, value
-                        FROM metric_rollups
-                        WHERE {" AND ".join(rollup_clauses)}
-                        ORDER BY ts
-                        """,
-                        rollup_params,
-                    )
-                )
-
-            raw_params = dict(params)
-            raw_clauses = list(clauses)
-            raw_start_ms = raw_cutoff_ms
-            if start_ms is not None:
-                raw_start_ms = max(raw_start_ms, start_ms)
-            if end_ms is None or raw_start_ms <= end_ms:
-                raw_params["raw_start_ms"] = raw_start_ms
-                raw_clauses.append("ts >= :raw_start_ms")
-                metric_queries.append(
-                    (
-                        f"""
-                        SELECT ts, value
-                        FROM metrics
-                        WHERE {" AND ".join(raw_clauses)}
-                        ORDER BY ts
-                        """,
-                        raw_params,
-                    )
-                )
-
+        where = " AND ".join(clauses)
         with self._db_lock:
-            with connect_logged_sqlite(self._db_path, logger=logger) as conn:
+            with closing(connect_logged_sqlite(self._db_path, logger=logger)) as conn, conn:
                 self._ensure_schema(conn)
-                rows: list[tuple[int, float]] = []
-                for query, query_params in metric_queries:
-                    query_rows = conn.execute(query, query_params).fetchall()
-                    if query_rows or "metric_rollups" not in query:
-                        rows.extend(query_rows)
-                        continue
-
-                    fallback_params = dict(params)
-                    fallback_clauses = list(clauses)
-                    if start_ms is not None:
-                        fallback_clauses.append("ts >= :start_ms")
-                    fallback_end_ms = raw_cutoff_ms - 1
-                    if end_ms is not None:
-                        fallback_end_ms = min(fallback_end_ms, end_ms)
-                    if start_ms is None or start_ms <= fallback_end_ms:
-                        fallback_params["fallback_end_ms"] = fallback_end_ms
-                        fallback_clauses.append("ts <= :fallback_end_ms")
-                        fallback_rows = conn.execute(
-                            f"""
-                            SELECT ts, value
-                            FROM metrics
-                            WHERE {" AND ".join(fallback_clauses)}
-                            ORDER BY ts
-                            """,
-                            fallback_params,
-                        ).fetchall()
-                        rows.extend(fallback_rows)
+                rows = conn.execute(
+                    f"SELECT ts, value FROM metrics WHERE {where} ORDER BY ts", params,
+                ).fetchall()
+                if policy is not None:
+                    rows.extend(conn.execute(
+                        f"""SELECT ts, value FROM metric_rollups
+                            WHERE {where} AND resolution_seconds = :resolution ORDER BY ts""",
+                        {**params, "resolution": policy.rollup.resolution_seconds},
+                    ).fetchall())
 
         rows.sort(key=lambda row: int(row[0]))
         return [{"ts": int(ts), "value": float(value)} for ts, value in rows]
@@ -1277,129 +1200,117 @@ class DevicePoller:
             now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
         cutoff_ms = now_ms - (policy.retention_seconds * 1000)
 
-        with self._db_lock:
-            with connect_logged_sqlite(self._db_path, logger=logger) as conn:
-                self._ensure_schema(conn)
-                cursor = conn.execute(
-                    """
-                    DELETE FROM raw_events
-                    WHERE ts < :cutoff_ms
-                    """,
-                    {"cutoff_ms": cutoff_ms},
-                )
-                deleted_rows = cursor.rowcount if cursor.rowcount is not None else 0
-
-        log_level = logging.INFO if deleted_rows else logging.DEBUG
-        logger.log(
-            log_level,
-            "Raw events retention removed %s rows older than %s seconds",
-            deleted_rows,
-            policy.retention_seconds,
+        started = time.perf_counter()
+        logger.info("Raw events retention started")
+        deleted_rows = self._delete_expired_batches("raw_events", cutoff_ms)
+        logger.info(
+            "Raw events retention removed %s rows in %.3f seconds (interrupted=%s)",
+            deleted_rows, time.perf_counter() - started, self._maintenance_stop.is_set(),
         )
         return deleted_rows
 
+    def _delete_expired_batches(
+        self, table: str, cutoff_ms: int, resolution_seconds: int | None = None,
+    ) -> int:
+        # Table names are internal constants, never supplied by API callers.
+        if table not in {"raw_events", "metric_rollups"}:
+            raise ValueError("Unsupported retention table")
+        predicate = "ts < :cutoff"
+        params = {"cutoff": cutoff_ms, "limit": RETENTION_BATCH_SIZE}
+        if resolution_seconds is not None:
+            predicate += " AND resolution_seconds = :resolution"
+            params["resolution"] = resolution_seconds
+        total = 0
+        while not self._maintenance_stop.is_set():
+            started = time.perf_counter()
+            with self._db_lock:
+                with closing(connect_logged_sqlite(self._db_path, logger=logger)) as conn, conn:
+                    self._ensure_schema(conn)
+                    deleted = conn.execute(
+                        f"DELETE FROM {table} WHERE id IN ("
+                        f"SELECT id FROM {table} WHERE {predicate} ORDER BY ts, id LIMIT :limit)",
+                        params,
+                    ).rowcount
+                    if deleted and table == "metric_rollups":
+                        self._metric_catalog_cache = None
+            total += deleted
+            logger.debug("%s retention batch deleted %s rows in %.3f seconds",
+                         table, deleted, time.perf_counter() - started)
+            if deleted < RETENTION_BATCH_SIZE:
+                break
+            if self._maintenance_stop.wait(RETENTION_BATCH_PAUSE_SECONDS):
+                break
+        return total
+
     def _apply_metrics_retention(self, reference_ts_ms: int | None = None) -> dict[str, int]:
+        result = {"rolled_up_rows": 0, "deleted_raw_rows": 0, "deleted_rollup_rows": 0}
         policy = self._load_metrics_retention_policy()
         if policy is None or not self._db_path:
-            return {
-                "rolled_up_rows": 0,
-                "deleted_raw_rows": 0,
-                "deleted_rollup_rows": 0,
-            }
-
+            return result
+        started = time.perf_counter()
+        logger.info("Metrics retention started")
         now_ms = reference_ts_ms
         if now_ms is None:
             now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
-        raw_cutoff_ms = now_ms - (policy.raw_retention_seconds * 1000)
-        rollup_cutoff_ms = now_ms - (policy.rollup.retention_seconds * 1000)
-
-        with self._db_lock:
-            with connect_logged_sqlite(self._db_path, logger=logger) as conn:
-                self._ensure_schema(conn)
-                raw_rows = conn.execute(
-                    """
-                    SELECT
-                        id,
-                        ts,
-                        device_type,
-                        device_id,
-                        metric,
-                        value,
-                        unit
-                    FROM metrics
-                    WHERE ts < :raw_cutoff_ms
-                    ORDER BY device_type, device_id, metric, ts, id
-                    """,
-                    {"raw_cutoff_ms": raw_cutoff_ms},
-                ).fetchall()
-
-                rollup_rows = self._build_metric_rollup_rows(raw_rows=raw_rows, rollup=policy.rollup)
-                if rollup_rows:
+        raw_cutoff_ms = now_ms - policy.raw_retention_seconds * 1000
+        rollup_cutoff_ms = now_ms - policy.rollup.retention_seconds * 1000
+        index_ready = False
+        while not self._maintenance_stop.is_set():
+            batch_started = time.perf_counter()
+            with self._db_lock:
+                with closing(connect_logged_sqlite(self._db_path, logger=logger)) as conn, conn:
+                    self._ensure_schema(conn)
+                    if not index_ready:
+                        index_started = time.perf_counter()
+                        logger.info("Ensuring metrics retention time index")
+                        conn.execute("CREATE INDEX IF NOT EXISTS idx_metrics_ts ON metrics (ts)")
+                        logger.info("Metrics retention index ready in %.3f seconds",
+                                    time.perf_counter() - index_started)
+                        index_ready = True
+                    raw_rows = conn.execute(
+                        """SELECT id, ts, device_type, device_id, metric, value, unit
+                           FROM metrics WHERE ts < ? ORDER BY ts, id LIMIT ?""",
+                        (raw_cutoff_ms, RETENTION_BATCH_SIZE),
+                    ).fetchall()
+                    if not raw_rows:
+                        break
+                    rollup_rows = self._build_metric_rollup_rows(raw_rows, policy.rollup)
+                    # Expired history need not be written only to be deleted again.
+                    rollup_rows = [row for row in rollup_rows if row["ts"] >= rollup_cutoff_ms]
+                    comparison = ">" if policy.rollup.sample == "last" else "<"
+                    # Legacy rollups have no source timestamp: retain first/any,
+                    # replace last with a newly processed sample, as before.
+                    legacy_replace = 1 if policy.rollup.sample == "last" else 0
                     conn.executemany(
-                        """
-                        INSERT OR REPLACE INTO metric_rollups (
-                            ts,
-                            resolution_seconds,
-                            device_type,
-                            device_id,
-                            metric,
-                            value,
-                            unit
-                        ) VALUES (
-                            :ts,
-                            :resolution_seconds,
-                            :device_type,
-                            :device_id,
-                            :metric,
-                            :value,
-                            :unit
-                        )
-                        """,
-                        rollup_rows,
+                        f"""INSERT INTO metric_rollups (
+                            ts, resolution_seconds, device_type, device_id, metric,
+                            value, unit, sample_ts, sample_id
+                        ) VALUES (:ts, :resolution_seconds, :device_type, :device_id,
+                                  :metric, :value, :unit, :sample_ts, :sample_id)
+                        ON CONFLICT (resolution_seconds, device_type, device_id, metric, ts)
+                        DO UPDATE SET value=excluded.value, unit=excluded.unit,
+                                      sample_ts=excluded.sample_ts, sample_id=excluded.sample_id
+                        WHERE (metric_rollups.sample_ts IS NULL AND {legacy_replace})
+                           OR (excluded.sample_ts, excluded.sample_id) {comparison}
+                              (metric_rollups.sample_ts, metric_rollups.sample_id)
+                        """, rollup_rows,
                     )
-                    self._update_metric_catalog_cache(rollup_rows)
-
-                deleted_raw_cursor = conn.execute(
-                    """
-                    DELETE FROM metrics
-                    WHERE ts < :raw_cutoff_ms
-                    """,
-                    {"raw_cutoff_ms": raw_cutoff_ms},
-                )
-                deleted_raw_rows = (
-                    deleted_raw_cursor.rowcount if deleted_raw_cursor.rowcount is not None else 0
-                )
-                deleted_rollup_cursor = conn.execute(
-                    """
-                    DELETE FROM metric_rollups
-                    WHERE resolution_seconds = :resolution_seconds
-                      AND ts < :rollup_cutoff_ms
-                    """,
-                    {
-                        "resolution_seconds": policy.rollup.resolution_seconds,
-                        "rollup_cutoff_ms": rollup_cutoff_ms,
-                    },
-                )
-                deleted_rollup_rows = (
-                    deleted_rollup_cursor.rowcount if deleted_rollup_cursor.rowcount is not None else 0
-                )
-                if self._metric_catalog_cache is not None and (deleted_raw_rows or deleted_rollup_rows):
-                    self._refresh_metric_catalog_cache(conn)
-
-        rolled_up_rows = len(rollup_rows)
-        log_level = logging.INFO if (rolled_up_rows or deleted_raw_rows or deleted_rollup_rows) else logging.DEBUG
-        logger.log(
-            log_level,
-            "Metrics retention rolled up %s buckets, deleted %s raw rows, deleted %s expired rollups",
-            rolled_up_rows,
-            deleted_raw_rows,
-            deleted_rollup_rows,
+                    conn.executemany("DELETE FROM metrics WHERE id = ?",
+                                     [(row[0],) for row in raw_rows])
+                # Invalidate only after commit; avoid scanning the entire catalog per batch.
+                self._metric_catalog_cache = None
+            result["rolled_up_rows"] += len(rollup_rows)
+            result["deleted_raw_rows"] += len(raw_rows)
+            logger.debug("Metrics retention batch processed %s rows in %.3f seconds",
+                         len(raw_rows), time.perf_counter() - batch_started)
+            if self._maintenance_stop.wait(RETENTION_BATCH_PAUSE_SECONDS):
+                break
+        result["deleted_rollup_rows"] = self._delete_expired_batches(
+            "metric_rollups", rollup_cutoff_ms, policy.rollup.resolution_seconds,
         )
-        return {
-            "rolled_up_rows": rolled_up_rows,
-            "deleted_raw_rows": deleted_raw_rows,
-            "deleted_rollup_rows": deleted_rollup_rows,
-        }
+        logger.info("Metrics retention finished in %.3f seconds: %s (interrupted=%s)",
+                    time.perf_counter() - started, result, self._maintenance_stop.is_set())
+        return result
 
     def _build_metric_rollup_rows(
         self,
@@ -1440,11 +1351,13 @@ class DevicePoller:
         rollup_rows: list[dict[str, Any]] = []
         for key in sorted(selected_rows):
             bucket_start_ts, device_type, device_id, metric = key
-            _ts, _row_id, unit, value = selected_rows[key]
+            sample_ts, sample_id, unit, value = selected_rows[key]
             rollup_rows.append(
                 {
                     "ts": bucket_start_ts,
                     "resolution_seconds": rollup.resolution_seconds,
+                    "sample_ts": sample_ts,
+                    "sample_id": sample_id,
                     "device_type": device_type,
                     "device_id": device_id,
                     "metric": metric,
@@ -1912,8 +1825,11 @@ class DevicePoller:
     def _ensure_schema(self, conn: sqlite3.Connection) -> None:
         if self._schema_ready:
             return
+        started = time.perf_counter()
+        logger.info("Preparing SQLite telemetry schema")
         self._ensure_tables(conn)
         self._schema_ready = True
+        logger.info("SQLite telemetry schema ready in %.3f seconds", time.perf_counter() - started)
 
     def _ensure_tables(self, conn: sqlite3.Connection) -> None:
         conn.execute(
@@ -2022,6 +1938,8 @@ class DevicePoller:
             expected_columns={
                 "ts": "INTEGER NOT NULL",
                 "resolution_seconds": "INTEGER NOT NULL",
+                "sample_ts": "INTEGER",
+                "sample_id": "INTEGER",
                 "device_type": "TEXT NOT NULL",
                 "device_id": "TEXT NOT NULL",
                 "metric": "TEXT NOT NULL",

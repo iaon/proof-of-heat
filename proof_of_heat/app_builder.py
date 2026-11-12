@@ -389,7 +389,7 @@ def create_app(
         route_paths = sorted({route.path for route in app_instance.router.routes})
         logger.info("Available routes: %s", ", ".join(route_paths))
         try:
-            device_poller.start()
+            device_poller.start(paused=True)
             control_scheduler = deps.background_scheduler_cls()
             control_scheduler.add_job(
                 deps.run_heating_mode_control,
@@ -402,6 +402,8 @@ def create_app(
             )
             control_scheduler.start()
             deps.run_heating_mode_control(device_poller)
+            # Maintenance must not acquire the DB lock before initial control reads.
+            device_poller.resume()
             yield
         finally:
             device_poller.shutdown()

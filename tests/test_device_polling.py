@@ -2,6 +2,9 @@ import json
 import sqlite3
 import time
 from datetime import datetime, timezone
+from threading import Event
+
+import pytest
 
 from proof_of_heat.services import device_polling
 from proof_of_heat.services import economic_polling
@@ -1116,7 +1119,7 @@ def test_zont_refresh_interval_180_is_valid(monkeypatch, tmp_path):
         poller.shutdown()
 
 
-def test_raw_events_retention_job_is_scheduled_and_runs_on_start(tmp_path):
+def test_raw_events_retention_job_is_scheduled_and_runs_on_start(monkeypatch, tmp_path):
     settings = {
         "database": {
             "retention": {
@@ -1146,6 +1149,16 @@ def test_raw_events_retention_job_is_scheduled_and_runs_on_start(tmp_path):
             ],
         )
 
+    completed = Event()
+    original = poller._apply_raw_events_retention
+
+    def run_retention():
+        try:
+            return original()
+        finally:
+            completed.set()
+
+    monkeypatch.setattr(poller, "_apply_raw_events_retention", run_retention)
     poller.start()
     try:
         assert poller._scheduler is not None
@@ -1154,6 +1167,7 @@ def test_raw_events_retention_job_is_scheduled_and_runs_on_start(tmp_path):
         assert jobs[0].id == "retention-raw-events"
         assert "interval[1:00:00]" in str(jobs[0].trigger)
 
+        assert completed.wait(5), "Background retention did not finish"
         with sqlite3.connect(db_path) as conn:
             remaining_ids = [
                 row[0]
@@ -1171,7 +1185,7 @@ def test_raw_events_retention_job_is_scheduled_and_runs_on_start(tmp_path):
     assert remaining_ids == ["recent"]
 
 
-def test_metrics_retention_job_is_scheduled_and_runs_on_start(tmp_path):
+def test_metrics_retention_job_is_scheduled_and_runs_on_start(monkeypatch, tmp_path):
     settings = {
         "database": {
             "retention": {
@@ -1206,6 +1220,16 @@ def test_metrics_retention_job_is_scheduled_and_runs_on_start(tmp_path):
             (old_ts_ms, "open_meteo", "1001", "temperature", 1.5, "celsius"),
         )
 
+    completed = Event()
+    original = poller._apply_metrics_retention
+
+    def run_retention():
+        try:
+            return original()
+        finally:
+            completed.set()
+
+    monkeypatch.setattr(poller, "_apply_metrics_retention", run_retention)
     poller.start()
     try:
         assert poller._scheduler is not None
@@ -1214,6 +1238,7 @@ def test_metrics_retention_job_is_scheduled_and_runs_on_start(tmp_path):
         assert jobs[0].id == "retention-metrics"
         assert "interval[1:00:00]" in str(jobs[0].trigger)
 
+        assert completed.wait(5), "Background retention did not finish"
         with sqlite3.connect(db_path) as conn:
             remaining_raw_count = conn.execute("SELECT COUNT(*) FROM metrics").fetchone()[0]
             rollup_count = conn.execute("SELECT COUNT(*) FROM metric_rollups").fetchone()[0]
@@ -2111,3 +2136,156 @@ def test_economics_time_of_day_tariff_uses_location_timezone(monkeypatch, tmp_pa
     payload = poller.poll_economics(settings["economics"])
 
     assert payload["derived"]["electricity_price_rub_kwh"] == 5.0
+
+
+def _retention_settings(sample="last"):
+    return {"database": {"retention": {
+        "raw_events": {"enabled": True, "retention_seconds": 86400, "interval_seconds": 3600},
+        "metrics": {"enabled": True, "interval_seconds": 3600,
+                    "raw_retention_seconds": 604800,
+                    "rollups": [{"resolution_seconds": 600,
+                                 "retention_seconds": 15552000, "sample": sample}]},
+    }}}
+
+
+def test_start_does_not_wait_for_retention(monkeypatch, tmp_path):
+    poller = DevicePoller(_retention_settings(), data_dir=tmp_path)
+    entered, release = Event(), Event()
+
+    def slow_retention():
+        entered.set()
+        assert release.wait(5)
+
+    monkeypatch.setattr(poller, "_apply_raw_events_retention", slow_retention)
+    try:
+        poller.start()
+        assert entered.wait(5)
+        # start() returned while maintenance is still running.
+        assert not release.is_set()
+    finally:
+        release.set()
+        poller.shutdown()
+
+
+@pytest.mark.parametrize("sample, expected", [("last", 3.0), ("first", 1.0), ("any", 1.0)])
+def test_retention_resumes_partial_bucket_after_restart(monkeypatch, tmp_path, sample, expected):
+    monkeypatch.setattr(device_polling, "RETENTION_BATCH_SIZE", 2)
+    settings = _retention_settings(sample)
+    poller = DevicePoller(settings, data_dir=tmp_path)
+    now = 2_000_000_000_000
+    bucket = ((now - 604800000) // 600000 - 2) * 600000
+    path = tmp_path / "telemetry.sqlite3"
+    with sqlite3.connect(path) as conn:
+        poller._ensure_tables(conn)
+        conn.executemany(
+            "INSERT INTO metrics (ts,device_type,device_id,metric,value) VALUES (?, 'test','1','temp',?)",
+            [(bucket + 1000, 1.0), (bucket + 2000, 2.0), (bucket + 2000, 3.0)],
+        )
+
+    def interrupt_after_commit(timeout):
+        # The pause must happen after both commit and release of the DB lock.
+        assert poller._db_lock.acquire(blocking=False)
+        poller._db_lock.release()
+        with sqlite3.connect(path) as conn:
+            assert conn.execute("SELECT count(*) FROM metrics").fetchone()[0] == 1
+        poller._maintenance_stop.set()
+        return True
+
+    monkeypatch.setattr(poller._maintenance_stop, "wait", interrupt_after_commit)
+    result = poller._apply_metrics_retention(now)
+    assert result["deleted_raw_rows"] == 2
+    restarted = DevicePoller(settings, data_dir=tmp_path)
+    restarted._apply_metrics_retention(now)
+    restarted._apply_metrics_retention(now)
+    with sqlite3.connect(path) as conn:
+        assert conn.execute("SELECT value FROM metric_rollups").fetchall() == [(expected,)]
+        assert conn.execute("SELECT count(*) FROM metrics").fetchone()[0] == 0
+        plan = conn.execute("EXPLAIN QUERY PLAN SELECT id FROM metrics WHERE ts < ? ORDER BY ts,id LIMIT 2000", (now,)).fetchall()
+        assert any("idx_metrics_ts" in row[3] and "SEARCH" in row[3] for row in plan)
+
+
+def test_series_includes_unprocessed_old_rows_with_existing_rollups(tmp_path):
+    poller = DevicePoller(_retention_settings(), data_dir=tmp_path)
+    now = int(datetime.now(timezone.utc).timestamp() * 1000)
+    bucket = ((now - 604800000) // 600000 - 3) * 600000
+    with sqlite3.connect(tmp_path / "telemetry.sqlite3") as conn:
+        poller._ensure_tables(conn)
+        conn.execute("INSERT INTO metric_rollups (ts,resolution_seconds,device_type,device_id,metric,value) VALUES (?,600,'test','1','temp',1)", (bucket,))
+        conn.execute("INSERT INTO metrics (ts,device_type,device_id,metric,value) VALUES (?,'test','1','temp',2)", (bucket + 601000,))
+    assert poller.get_metric_series("test", "1", "temp", bucket, now) == [
+        {"ts": bucket, "value": 1.0}, {"ts": bucket + 601000, "value": 2.0},
+    ]
+
+
+def test_raw_retention_commits_bounded_batches(monkeypatch, tmp_path):
+    monkeypatch.setattr(device_polling, "RETENTION_BATCH_SIZE", 2)
+    poller = DevicePoller(_retention_settings(), data_dir=tmp_path)
+    path = tmp_path / "telemetry.sqlite3"
+    with sqlite3.connect(path) as conn:
+        poller._ensure_tables(conn)
+        conn.executemany("INSERT INTO raw_events (ts,device_type,device_id,payload) VALUES (?,'test','1','{}')", [(1,), (2,), (3,), (4,), (5,)])
+    remaining = []
+
+    def pause(timeout):
+        assert poller._db_lock.acquire(blocking=False)
+        poller._db_lock.release()
+        with sqlite3.connect(path) as conn:
+            remaining.append(conn.execute("SELECT count(*) FROM raw_events").fetchone()[0])
+        return False
+
+    monkeypatch.setattr(poller._maintenance_stop, "wait", pause)
+    assert poller._apply_raw_events_retention(2_000_000_000_000) == 5
+    assert remaining == [3, 1]
+
+
+def test_retention_waits_until_initialization_is_resumed(monkeypatch, tmp_path):
+    poller = DevicePoller(_retention_settings(), data_dir=tmp_path)
+    ran = Event()
+    monkeypatch.setattr(poller, "_apply_raw_events_retention", ran.set)
+    monkeypatch.setattr(poller, "_apply_metrics_retention", lambda: None)
+    try:
+        poller.start(paused=True)
+        assert not ran.wait(0.05)
+        poller.resume()
+        assert ran.wait(5)
+    finally:
+        poller.shutdown()
+
+
+def test_metric_batch_rolls_back_rollups_if_source_delete_fails(tmp_path):
+    poller = DevicePoller(_retention_settings(), data_dir=tmp_path)
+    now = 2_000_000_000_000
+    ts = now - 700_000_000
+    path = tmp_path / "telemetry.sqlite3"
+    with sqlite3.connect(path) as conn:
+        poller._ensure_tables(conn)
+        conn.execute("INSERT INTO metrics (ts,device_type,device_id,metric,value) VALUES (?,'test','1','temp',1)", (ts,))
+        conn.execute("CREATE TRIGGER fail_delete BEFORE DELETE ON metrics BEGIN SELECT RAISE(ABORT, 'test failure'); END")
+    with pytest.raises(sqlite3.IntegrityError, match="test failure"):
+        poller._apply_metrics_retention(now)
+    with sqlite3.connect(path) as conn:
+        assert conn.execute("SELECT count(*) FROM metric_rollups").fetchone()[0] == 0
+        assert conn.execute("SELECT count(*) FROM metrics").fetchone()[0] == 1
+        conn.execute("DROP TRIGGER fail_delete")
+    assert poller._apply_metrics_retention(now)["deleted_raw_rows"] == 1
+
+
+@pytest.mark.parametrize("sample, expected", [("first", 1.0), ("last", 2.0)])
+def test_legacy_rollup_migration_preserves_history(tmp_path, sample, expected):
+    path = tmp_path / "telemetry.sqlite3"
+    now = 2_000_000_000_000
+    bucket = ((now - 604800000) // 600000 - 2) * 600000
+    with sqlite3.connect(path) as conn:
+        conn.execute("""CREATE TABLE metric_rollups (
+            id INTEGER PRIMARY KEY, ts INTEGER NOT NULL, resolution_seconds INTEGER NOT NULL,
+            device_type TEXT NOT NULL, device_id TEXT NOT NULL, metric TEXT NOT NULL,
+            value REAL NOT NULL, unit TEXT)""")
+        conn.execute("INSERT INTO metric_rollups (ts,resolution_seconds,device_type,device_id,metric,value) VALUES (?,600,'test','1','temp',1)", (bucket,))
+    poller = DevicePoller(_retention_settings(sample), data_dir=tmp_path)
+    with sqlite3.connect(path) as conn:
+        poller._ensure_tables(conn)
+        assert {"sample_ts", "sample_id"} <= {row[1] for row in conn.execute("PRAGMA table_info(metric_rollups)")}
+        conn.execute("INSERT INTO metrics (ts,device_type,device_id,metric,value) VALUES (?,'test','1','temp',2)", (bucket + 1000,))
+    poller._apply_metrics_retention(now)
+    with sqlite3.connect(path) as conn:
+        assert conn.execute("SELECT value FROM metric_rollups").fetchall() == [(expected,)]

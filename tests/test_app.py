@@ -87,7 +87,10 @@ class DummyDevicePoller:
         self.settings_data = settings_data
         self.data_dir = data_dir
 
-    def start(self):
+    def start(self, *, paused=False):
+        return None
+
+    def resume(self):
         return None
 
     def shutdown(self):
