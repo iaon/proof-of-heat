@@ -4,7 +4,9 @@
 
 ## Rule
 
-Always prefix shell commands with `rtk`.
+These instructions apply only after the user explicitly enables RTK for the current session, as described in `AGENTS.md`.
+
+While RTK is enabled, prefix shell commands with `rtk`. When the user disables RTK, run commands normally. New sessions start with RTK disabled.
 
 Examples:
 

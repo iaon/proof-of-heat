@@ -135,4 +135,8 @@ Short cumulative summary.
 #### Assistant
 [Response]
 
-@RTK.md
+## Optional RTK Mode
+
+- RTK is disabled by default. Run shell commands normally unless the user explicitly asks to enable RTK.
+- When the user enables RTK, read `RTK.md` and follow its instructions.
+- RTK stays enabled for the current session until the user asks to disable it. New sessions start with RTK disabled.
