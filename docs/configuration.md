@@ -305,6 +305,17 @@ Merge these entries into your existing `database.retention` mapping, keeping you
 - The new history tables are available in SQLite. Existing numeric graphs continue to use `metrics` and `metric_rollups` with their own retention settings. Latest-state getters continue to read detailed rows; archived snapshots are not used as current control inputs. No new history UI or API is introduced.
 - Existing databases acquire the new tables and indexes automatically; no source rows are deleted unless their retention policy is enabled.
 
+SQLite index maintenance runs in the background after startup initialization, independently of retention settings, and checks again every 24 hours so interrupted or failed work can be retried. It removes these obsolete indexes from existing databases:
+
+- `idx_metric_rollups_type_device_metric_ts`
+- `idx_metric_rollups_device_metric_ts`
+- `idx_metrics_device_metric_ts`
+- `idx_metrics_type_device_id`
+
+New databases no longer create them. The unique rollup bucket index serves chart queries that specify resolution, device type, device ID and metric; the remaining composite metrics index serves raw charts and latest-value queries. Time indexes used by retention remain in place. Tables and historical rows are preserved.
+
+Each index is dropped separately, releasing the application database lock between indexes. Dropping a large index can still cause disk activity and temporarily block database requests; SQLite does not split a single index drop into row batches. INFO logs show each removed index and its duration. Removal makes pages available for reuse; shrinking the file remains the responsibility of the existing `VACUUM` policy. Index maintenance does not force a vacuum or change retention/vacuum settings.
+
 `maintenance.vacuum` fields:
 
 - `enabled` — optional boolean, default `true` when the block exists.

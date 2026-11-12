@@ -41,6 +41,12 @@ CONTROL_DEVICE_ID = "main"
 DEFAULT_ZONT_STALE_AFTER_SECONDS = 600
 RETENTION_BATCH_SIZE = 2000
 RETENTION_BATCH_PAUSE_SECONDS = 0.05
+OBSOLETE_TELEMETRY_INDEXES = (
+    "idx_metric_rollups_type_device_metric_ts",
+    "idx_metric_rollups_device_metric_ts",
+    "idx_metrics_device_metric_ts",
+    "idx_metrics_type_device_id",
+)
 
 # Internal SQL identifiers and column types; preserve complete control snapshots.
 CONTROL_HISTORY_COLUMNS = {
@@ -133,6 +139,13 @@ class DevicePoller:
         default_interval = int(devices.get("refresh_interval", 30) or 30)
         poll_jobs: list[tuple[DeviceKey, dict[str, Any], Callable[..., dict[str, Any]]]] = []
         maintenance_jobs: list[MaintenanceJob] = []
+        if self._db_path:
+            maintenance_jobs.append(MaintenanceJob(
+                job_id="maintenance-indexes",
+                interval_seconds=86400,
+                handler=self._remove_obsolete_indexes,
+                run_on_start=True,
+            ))
         seen_weather_device_ids: set[int] = set()
 
         for device in devices.get("zont", []) or []:
@@ -1216,6 +1229,38 @@ class DevicePoller:
             min_reclaimable_mb=min_reclaimable_mb,
         )
 
+    def _remove_obsolete_indexes(self) -> int:
+        """Release obsolete index pages off the startup path, one index at a time."""
+        if not self._db_path:
+            return 0
+        removed = 0
+        started = time.perf_counter()
+        for name in OBSOLETE_TELEMETRY_INDEXES:
+            if self._maintenance_stop.is_set():
+                break
+            index_started = time.perf_counter()
+            with self._db_lock:
+                with closing(connect_logged_sqlite(self._db_path, logger=logger)) as conn, conn:
+                    # Ensure replacement indexes exist before removing legacy ones.
+                    self._ensure_schema(conn)
+                    exists = conn.execute(
+                        "SELECT 1 FROM sqlite_schema WHERE type = 'index' AND name = ?",
+                        (name,),
+                    ).fetchone()
+                    if not exists:
+                        continue
+                    logger.info("Removing obsolete SQLite index %s", name)
+                    conn.execute(f"DROP INDEX IF EXISTS {name}")
+            removed += 1
+            logger.info("Removed obsolete SQLite index %s in %.3f seconds",
+                        name, time.perf_counter() - index_started)
+            if self._maintenance_stop.wait(RETENTION_BATCH_PAUSE_SECONDS):
+                break
+        logger.log(logging.INFO if removed else logging.DEBUG,
+                   "SQLite index maintenance removed %s indexes in %.3f seconds (interrupted=%s)",
+                   removed, time.perf_counter() - started, self._maintenance_stop.is_set())
+        return removed
+
     def _apply_raw_events_retention(self, reference_ts_ms: int | None = None) -> int:
         policy = self._load_raw_events_retention_policy()
         if policy is None or not self._db_path:
@@ -1983,18 +2028,6 @@ class DevicePoller:
         )
         conn.execute(
             """
-            CREATE INDEX IF NOT EXISTS idx_metrics_device_metric_ts
-            ON metrics (device_id, metric, ts)
-            """
-        )
-        conn.execute(
-            """
-            CREATE INDEX IF NOT EXISTS idx_metrics_type_device_id
-            ON metrics (device_type, device_id)
-            """
-        )
-        conn.execute(
-            """
             CREATE INDEX IF NOT EXISTS idx_metrics_type_device_metric_ts
             ON metrics (device_type, device_id, metric, ts)
             """
@@ -2046,18 +2079,6 @@ class DevicePoller:
             """
             CREATE UNIQUE INDEX IF NOT EXISTS idx_metric_rollups_unique_bucket
             ON metric_rollups (resolution_seconds, device_type, device_id, metric, ts)
-            """
-        )
-        conn.execute(
-            """
-            CREATE INDEX IF NOT EXISTS idx_metric_rollups_device_metric_ts
-            ON metric_rollups (device_id, metric, ts)
-            """
-        )
-        conn.execute(
-            """
-            CREATE INDEX IF NOT EXISTS idx_metric_rollups_type_device_metric_ts
-            ON metric_rollups (device_type, device_id, metric, ts)
             """
         )
         conn.execute(
