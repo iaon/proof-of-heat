@@ -96,6 +96,16 @@ def test_default_settings_yaml_includes_database_maintenance_settings():
 
     assert parsed["database"] == {
         "retention": {
+            **{
+                table: {
+                    "enabled": True,
+                    "interval_seconds": 3600,
+                    "raw_retention_seconds": 604800,
+                    "rollups": [{"resolution_seconds": 600,
+                                 "retention_seconds": 15552000, "sample": "last"}],
+                }
+                for table in ("control_inputs", "control_decisions")
+            },
             "raw_events": {
                 "enabled": True,
                 "retention_seconds": 86400,
@@ -346,3 +356,17 @@ def test_checked_in_settings_json_schema_matches_generated_schema():
     schema_path = Path(__file__).resolve().parents[1] / "conf" / "settings.schema.json"
 
     assert json.loads(schema_path.read_text(encoding="utf-8")) == build_settings_json_schema()
+
+
+@pytest.mark.parametrize("table", ["control_inputs", "control_decisions"])
+def test_control_history_retention_configuration(table):
+    parsed = parse_settings_yaml(load_default_settings_yaml())
+    policy = parsed["database"]["retention"][table]
+    assert policy["raw_retention_seconds"] == 604800
+    assert policy["rollups"] == [{"resolution_seconds": 600, "retention_seconds": 15552000, "sample": "last"}]
+    policy["raw_retention_seconds"] = 0
+    with pytest.raises(SettingsValidationError):
+        parse_settings_yaml(render_settings_yaml(parsed))
+    policy.clear()
+    policy["enabled"] = False
+    parse_settings_yaml(render_settings_yaml(parsed))

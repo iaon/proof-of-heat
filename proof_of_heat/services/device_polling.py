@@ -10,6 +10,7 @@ import subprocess
 import time
 from contextlib import closing
 from dataclasses import dataclass
+from functools import partial
 from datetime import datetime, timezone
 from pathlib import Path
 from threading import Event, Lock
@@ -40,6 +41,21 @@ CONTROL_DEVICE_ID = "main"
 DEFAULT_ZONT_STALE_AFTER_SECONDS = 600
 RETENTION_BATCH_SIZE = 2000
 RETENTION_BATCH_PAUSE_SECONDS = 0.05
+
+# Internal SQL identifiers and column types; preserve complete control snapshots.
+CONTROL_HISTORY_COLUMNS = {
+    "control_inputs": {
+        "indoor_temp": "REAL", "indoor_temp_source": "TEXT",
+        "outdoor_temp": "REAL", "outdoor_temp_source": "TEXT",
+        "supply_temp": "REAL", "supply_temp_source": "TEXT",
+        "power": "REAL NOT NULL", "power_sources": "TEXT",
+    },
+    "control_decisions": {
+        "mode": "TEXT", "resolved_target_room_temp_c": "REAL",
+        "resolved_target_supply_temp_c": "REAL", "requested_power_percent": "REAL",
+        "requested_power_w": "REAL", "override_reason": "TEXT",
+    },
+}
 
 @dataclass(frozen=True)
 class DeviceKey:
@@ -178,6 +194,16 @@ class DevicePoller:
                     run_on_start=True,
                 )
             )
+
+        for table in CONTROL_HISTORY_COLUMNS:
+            policy = self._load_metrics_retention_policy(table)
+            if policy is not None:
+                maintenance_jobs.append(MaintenanceJob(
+                    job_id=f"retention-{table.replace('_', '-')}",
+                    interval_seconds=policy.interval_seconds,
+                    handler=partial(self._apply_control_history_retention, table),
+                    run_on_start=True,
+                ))
 
         database_vacuum = self._load_database_vacuum_policy()
         if database_vacuum is not None and database_vacuum.enabled:
@@ -1075,7 +1101,7 @@ class DevicePoller:
             interval_seconds=interval_seconds,
         )
 
-    def _load_metrics_retention_policy(self) -> MetricsRetentionPolicy | None:
+    def _load_metrics_retention_policy(self, target: str = "metrics") -> MetricsRetentionPolicy | None:
         if not self._db_path or not isinstance(self._settings, dict):
             return None
 
@@ -1085,7 +1111,7 @@ class DevicePoller:
         retention = database.get("retention")
         if not isinstance(retention, dict):
             return None
-        metrics = retention.get("metrics")
+        metrics = retention.get(target)
         if not isinstance(metrics, dict):
             return None
         if metrics.get("enabled") is False:
@@ -1093,17 +1119,17 @@ class DevicePoller:
 
         interval_seconds = self._safe_int(metrics.get("interval_seconds"))
         if interval_seconds is None or interval_seconds <= 0:
-            logger.warning("Skipping metrics retention due to invalid interval_seconds: %r", metrics)
+            logger.warning(f"Skipping {target} retention due to invalid interval_seconds: %r", metrics)
             return None
 
         raw_retention_seconds = self._safe_int(metrics.get("raw_retention_seconds"))
         if raw_retention_seconds is None or raw_retention_seconds <= 0:
-            logger.warning("Skipping metrics retention due to invalid raw_retention_seconds: %r", metrics)
+            logger.warning(f"Skipping {target} retention due to invalid raw_retention_seconds: %r", metrics)
             return None
 
         rollups = metrics.get("rollups")
         if not isinstance(rollups, list) or not rollups:
-            logger.warning("Skipping metrics retention due to missing rollups: %r", metrics)
+            logger.warning(f"Skipping {target} retention due to missing rollups: %r", metrics)
             return None
 
         valid_rollups: list[MetricRollupPolicy] = []
@@ -1113,11 +1139,11 @@ class DevicePoller:
                 valid_rollups.append(parsed)
 
         if not valid_rollups:
-            logger.warning("Skipping metrics retention due to invalid rollups: %r", metrics)
+            logger.warning(f"Skipping {target} retention due to invalid rollups: %r", metrics)
             return None
         if len(valid_rollups) > 1:
             logger.warning(
-                "Only the first metrics rollup level is currently supported; ignoring %s extra rollups",
+                f"Only the first {target} rollup level is currently supported; ignoring %s extra rollups",
                 len(valid_rollups) - 1,
             )
 
@@ -1213,7 +1239,8 @@ class DevicePoller:
         self, table: str, cutoff_ms: int, resolution_seconds: int | None = None,
     ) -> int:
         # Table names are internal constants, never supplied by API callers.
-        if table not in {"raw_events", "metric_rollups"}:
+        if table not in {"raw_events", "metric_rollups",
+                         "control_inputs_rollups", "control_decisions_rollups"}:
             raise ValueError("Unsupported retention table")
         predicate = "ts < :cutoff"
         params = {"cutoff": cutoff_ms, "limit": RETENTION_BATCH_SIZE}
@@ -1310,6 +1337,74 @@ class DevicePoller:
         )
         logger.info("Metrics retention finished in %.3f seconds: %s (interrupted=%s)",
                     time.perf_counter() - started, result, self._maintenance_stop.is_set())
+        return result
+
+    def _apply_control_history_retention(
+        self, table: str, reference_ts_ms: int | None = None,
+    ) -> dict[str, int]:
+        if table not in CONTROL_HISTORY_COLUMNS:
+            raise ValueError("Unsupported control history table")
+        result = {"rolled_up_rows": 0, "deleted_raw_rows": 0, "deleted_rollup_rows": 0}
+        policy = self._load_metrics_retention_policy(table)
+        if policy is None or not self._db_path:
+            return result
+        started = time.perf_counter()
+        logger.info("%s retention started", table)
+        now_ms = reference_ts_ms
+        if now_ms is None:
+            now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+        raw_cutoff = now_ms - policy.raw_retention_seconds * 1000
+        rollup_cutoff = now_ms - policy.rollup.retention_seconds * 1000
+        bucket_ms = policy.rollup.resolution_seconds * 1000
+        columns = ", ".join(CONTROL_HISTORY_COLUMNS[table])
+        assignments = ", ".join(f"{name}=excluded.{name}" for name in CONTROL_HISTORY_COLUMNS[table])
+        placeholders = ", ".join("?" for _ in range(4 + len(CONTROL_HISTORY_COLUMNS[table])))
+        comparison = ">" if policy.rollup.sample == "last" else "<"
+        rollup_table = f"{table}_rollups"
+        while not self._maintenance_stop.is_set():
+            batch_started = time.perf_counter()
+            with self._db_lock:
+                with closing(connect_logged_sqlite(self._db_path, logger=logger)) as conn, conn:
+                    self._ensure_schema(conn)
+                    rows = conn.execute(
+                        f"SELECT id, ts, {columns} FROM {table} "
+                        "WHERE ts < ? ORDER BY ts, id LIMIT ?",
+                        (raw_cutoff, RETENTION_BATCH_SIZE),
+                    ).fetchall()
+                    if not rows:
+                        break
+                    selected = {}
+                    for row in rows:
+                        bucket = row[1] // bucket_ms * bucket_ms
+                        if bucket < rollup_cutoff:
+                            continue
+                        if bucket not in selected or policy.rollup.sample == "last":
+                            selected[bucket] = (bucket, policy.rollup.resolution_seconds,
+                                                row[1], row[0], *row[2:])
+                    conn.executemany(
+                        f"""INSERT INTO {rollup_table}
+                            (ts, resolution_seconds, sample_ts, sample_id, {columns})
+                            VALUES ({placeholders})
+                            ON CONFLICT (resolution_seconds, ts) DO UPDATE SET
+                            sample_ts=excluded.sample_ts, sample_id=excluded.sample_id,
+                            {assignments}
+                            WHERE (excluded.sample_ts, excluded.sample_id) {comparison}
+                                  ({rollup_table}.sample_ts, {rollup_table}.sample_id)""",
+                        selected.values(),
+                    )
+                    conn.executemany(f"DELETE FROM {table} WHERE id = ?",
+                                     [(row[0],) for row in rows])
+            result["rolled_up_rows"] += len(selected)
+            result["deleted_raw_rows"] += len(rows)
+            logger.debug("%s retention batch processed %s rows in %.3f seconds",
+                         table, len(rows), time.perf_counter() - batch_started)
+            if self._maintenance_stop.wait(RETENTION_BATCH_PAUSE_SECONDS):
+                break
+        result["deleted_rollup_rows"] = self._delete_expired_batches(
+            rollup_table, rollup_cutoff, policy.rollup.resolution_seconds,
+        )
+        logger.info("%s retention finished in %.3f seconds: %s (interrupted=%s)",
+                    table, time.perf_counter() - started, result, self._maintenance_stop.is_set())
         return result
 
     def _build_metric_rollup_rows(
@@ -2041,6 +2136,19 @@ class DevicePoller:
                 "override_reason": "TEXT",
             },
         )
+
+        for table, columns in CONTROL_HISTORY_COLUMNS.items():
+            definitions = ", ".join(f"{name} {sql_type}" for name, sql_type in columns.items())
+            conn.execute(f"""CREATE TABLE IF NOT EXISTS {table}_rollups (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ts INTEGER NOT NULL,
+                resolution_seconds INTEGER NOT NULL,
+                sample_ts INTEGER NOT NULL,
+                sample_id INTEGER NOT NULL,
+                {definitions}
+            )""")
+            conn.execute(f"CREATE UNIQUE INDEX IF NOT EXISTS idx_{table}_rollups_resolution_ts "
+                         f"ON {table}_rollups (resolution_seconds, ts)")
 
     def _ensure_columns(
         self,

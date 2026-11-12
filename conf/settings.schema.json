@@ -184,6 +184,28 @@
     "DatabaseRetentionSettings": {
       "additionalProperties": false,
       "properties": {
+        "control_decisions": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/MetricsRetentionSettings"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "control_inputs": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/MetricsRetentionSettings"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
         "metrics": {
           "anyOf": [
             {

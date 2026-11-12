@@ -232,6 +232,8 @@ class MetricsRetentionSettings(SettingsSchemaModel):
 class DatabaseRetentionSettings(SettingsSchemaModel):
     raw_events: RawEventsRetentionSettings | None = None
     metrics: MetricsRetentionSettings | None = None
+    control_inputs: MetricsRetentionSettings | None = None
+    control_decisions: MetricsRetentionSettings | None = None
 
 
 class VacuumMaintenanceSettings(SettingsSchemaModel):

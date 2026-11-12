@@ -50,6 +50,22 @@ database:
         - resolution_seconds: 600
           retention_seconds: 15552000
           sample: last
+    control_inputs:
+      enabled: true
+      interval_seconds: 3600
+      raw_retention_seconds: 604800
+      rollups:
+        - resolution_seconds: 600
+          retention_seconds: 15552000
+          sample: last
+    control_decisions:
+      enabled: true
+      interval_seconds: 3600
+      raw_retention_seconds: 604800
+      rollups:
+        - resolution_seconds: 600
+          retention_seconds: 15552000
+          sample: last
   maintenance:
     vacuum:
       enabled: false

@@ -226,6 +226,8 @@ Currently supported retention targets:
 
 - `retention.raw_events`
 - `retention.metrics`
+- `retention.control_inputs`
+- `retention.control_decisions`
 
 Currently supported maintenance tasks:
 
@@ -265,7 +267,43 @@ Current behavior:
 - Each metric batch atomically saves representative points and deletes its source rows. Source timestamps and IDs in rollups preserve `first`/`last` selection across batches and restarts. Older databases receive these nullable columns automatically; legacy representatives without source metadata are retained for `first`/`any` and replaced by a new sample for `last`.
 - The `metrics(ts)` index is created by background maintenance on its first run. Building it on a large existing database still requires a one-time scan and can temporarily delay database requests.
 - INFO logs report schema/index preparation and total retention duration and row counts; DEBUG logs report individual batches. `rolled_up_rows` counts bucket writes attempted across batches, not distinct buckets.
-- `control_inputs` and `control_decisions` do not currently have retention policies.
+- `control_inputs` and `control_decisions` have independent, opt-in retention policies described below.
+
+`retention.control_inputs` and `retention.control_decisions`:
+
+Each block uses the same fields as `retention.metrics`: `enabled`, `interval_seconds`, `raw_retention_seconds`, and `rollups`. Without a block, or with `enabled: false`, the corresponding history is not cleaned up. Only the first valid rollup level is currently used.
+
+```yaml
+database:
+  retention:
+    control_inputs:
+      enabled: true
+      interval_seconds: 3600
+      raw_retention_seconds: 604800
+      rollups:
+        - resolution_seconds: 600
+          retention_seconds: 15552000
+          sample: last
+    control_decisions:
+      enabled: true
+      interval_seconds: 3600
+      raw_retention_seconds: 604800
+      rollups:
+        - resolution_seconds: 600
+          retention_seconds: 15552000
+          sample: last
+```
+
+Merge these entries into your existing `database.retention` mapping, keeping your other retention and vacuum settings.
+
+- Detailed snapshots remain for 7 days with the example configuration. Older rows are compacted into separate `control_inputs_rollups` and `control_decisions_rollups` tables, retained for 180 days and checked hourly. Both tasks also run in the background after startup initialization.
+- A rollup stores one complete source row per time bucket, including text fields, JSON source lists and `NULL` values. It does not combine independently selected fields. `sample: last` selects the greatest `(ts, id)`; `first` and `any` select the earliest available source row.
+- In each rollup table, `ts` is the bucket start, `sample_ts` is the original observation time, `sample_id` is the original row ID, and `resolution_seconds` identifies the bucket size. All other fields retain their original names and values. A unique index on `(resolution_seconds, ts)` prevents duplicate buckets.
+- Rows are transferred in transactions of at most 2,000 source rows with pauses and lock release between batches. A failed transaction retains its source rows; after interruption, the next run resumes with the remaining data. A bucket split across batches or restarts still retains the correct representative.
+- Expiration uses `rollup.ts < now - rollup.retention_seconds`. Already expired source buckets are deleted without first writing a rollup.
+- A snapshot every 10 minutes does not preserve every intervening mode change or short-lived override. Use a shorter resolution or longer raw retention if that detail is needed.
+- The new history tables are available in SQLite. Existing numeric graphs continue to use `metrics` and `metric_rollups` with their own retention settings. Latest-state getters continue to read detailed rows; archived snapshots are not used as current control inputs. No new history UI or API is introduced.
+- Existing databases acquire the new tables and indexes automatically; no source rows are deleted unless their retention policy is enabled.
 
 `maintenance.vacuum` fields:
 
