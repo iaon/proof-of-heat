@@ -99,11 +99,13 @@ class EconomicsPoller:
         db_path: Path | None = None,
         db_lock: Any | None = None,
         ensure_schema: Callable[[sqlite3.Connection], None] | None = None,
+        catalog_provider: Callable[[], dict] | None = None,
     ) -> None:
         self._settings = settings
         self._db_path = db_path
         self._db_lock = db_lock
         self._ensure_schema = ensure_schema
+        self._catalog_provider = catalog_provider
 
     def update_settings(self, settings: dict[str, Any]) -> None:
         self._settings = settings
@@ -118,11 +120,11 @@ class EconomicsPoller:
             return None
         return economics
 
-    def get_metadata(self) -> EconomicsMetadata:
+    def get_metadata(self, catalog: dict | None = None) -> EconomicsMetadata:
         economics = self._settings.get("economics") if isinstance(self._settings, dict) else None
         return build_economics_metadata(
             economics,
-            hashcost_sources=self._collect_hashcost_sources(),
+            hashcost_sources=self._collect_hashcost_sources(catalog),
         )
 
     def resolve_interval_seconds(self, economics: dict[str, Any] | None = None) -> int:
@@ -444,11 +446,20 @@ class EconomicsPoller:
 
         return EconomicsPollResult(ts_ms=ts_ms, payload=payload, metrics=metrics)
 
-    def _collect_hashcost_sources(self) -> list[EconomicsMetricSource]:
+    def _collect_hashcost_sources(self, catalog: dict | None = None) -> list[EconomicsMetricSource]:
         sources: set[EconomicsMetricSource] = set(
             _configured_hashcost_sources(self._settings)
         )
-        if self._db_path and self._db_lock is not None and self._ensure_schema is not None:
+        if catalog is not None or self._catalog_provider is not None:
+            configured = _configured_device_keys(self._settings)
+            available = catalog if catalog is not None else self._catalog_provider()
+            for kind, devices in available.items():
+                for device, metrics in devices.items():
+                    if configured and (kind, device) not in configured:
+                        continue
+                    if {"power_rate", "power_rate_j_th"}.intersection(metrics):
+                        sources.add(EconomicsMetricSource(device_type=kind, device_id=device))
+        elif self._db_path and self._db_lock is not None and self._ensure_schema is not None:
             with self._db_lock:
                 with connect_logged_sqlite(self._db_path, logger=logger) as conn:
                     self._ensure_schema(conn)

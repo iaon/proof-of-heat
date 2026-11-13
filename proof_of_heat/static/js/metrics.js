@@ -199,8 +199,23 @@ function selectMetricForRow(row, value) {
 }
 
 async function loadDeviceTypes() {
-    const res = await fetch(apiUrl("/api/metrics/catalog"));
-    const data = await res.json();
+    const notice = document.createElement("div");
+    notice.setAttribute("role", "status");
+    metricRowsEl.before(notice);
+    let data;
+    while (true) {
+        try {
+            const res = await fetch(apiUrl("/api/metrics/catalog"));
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+            data = await res.json();
+            if (data.ready !== false) break;
+            notice.textContent = "Список доступных показателей формируется. Он обновится автоматически.";
+        } catch (error) {
+            notice.textContent = "Не удалось загрузить список показателей. Повторяем попытку…";
+        }
+        await new Promise((resolve) => setTimeout(resolve, 2000));
+    }
+    notice.remove();
     metricsCatalog = data.catalog || {};
     deviceTypes = Object.keys(metricsCatalog);
     metricRows.forEach((row) => {

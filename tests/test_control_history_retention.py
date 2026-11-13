@@ -107,7 +107,7 @@ def test_control_retention_is_scheduled_in_background(monkeypatch, tmp_path):
     try:
         poller.start(paused=True)
         jobs = [job for job in poller._scheduler.get_jobs()
-                if job.id != "maintenance-indexes"]
+                if job.id not in {"maintenance-indexes", "maintenance-catalog"}]
         assert {job.id for job in jobs} == {"retention-control-inputs", "retention-control-decisions"}
         assert all(job.executor == "maintenance" for job in jobs)
         assert not any(event.is_set() for event in finished.values())

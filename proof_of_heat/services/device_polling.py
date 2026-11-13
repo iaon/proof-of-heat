@@ -29,6 +29,7 @@ from proof_of_heat.services.economic_polling import (
 )
 from proof_of_heat.services.http_client import create_http_client
 from proof_of_heat.services.metrics import MetricSample
+from proof_of_heat.services.metric_catalog import (MetricCatalog, ensure_catalog_schema, prune_catalog)
 from proof_of_heat.services.sqlite_logging import connect_logged_sqlite
 from proof_of_heat.services.weather import fetch_met_no_weather, fetch_open_meteo_weather
 
@@ -118,15 +119,16 @@ class DevicePoller:
         self._db_lock = Lock()
         self._maintenance_stop = Event()
         self._latest_payloads: dict[DeviceKey, dict[str, Any]] = {}
-        self._metric_catalog_cache: dict[str, dict[str, set[str]]] | None = None
         self._scheduler: BackgroundScheduler | None = None
         self._db_path = (data_dir / "telemetry.sqlite3") if data_dir else None
+        self._catalog = MetricCatalog(self._db_path)
         self._schema_ready = False
         self._economics_poller = EconomicsPoller(
             settings=settings,
             db_path=self._db_path,
             db_lock=self._db_lock,
             ensure_schema=self._ensure_schema,
+            catalog_provider=self.get_metric_catalog,
         )
 
     def start(self, *, paused: bool = False) -> None:
@@ -145,6 +147,11 @@ class DevicePoller:
                 interval_seconds=86400,
                 handler=self._remove_obsolete_indexes,
                 run_on_start=True,
+            ))
+        if self._db_path:
+            maintenance_jobs.insert(0, MaintenanceJob(
+                job_id="maintenance-catalog", interval_seconds=3600,
+                handler=self._maintain_metric_catalog, run_on_start=True,
             ))
         seen_weather_device_ids: set[int] = set()
 
@@ -304,87 +311,11 @@ class DevicePoller:
         if was_running:
             self.start()
 
-    def _upsert_metric_catalog_entry(
-        self,
-        catalog: dict[str, dict[str, set[str]]],
-        device_type: Any,
-        device_id: Any,
-        metric: Any,
-    ) -> None:
-        if not device_type or not device_id or not metric:
-            return
-        catalog.setdefault(str(device_type), {}).setdefault(str(device_id), set()).add(str(metric))
-
-    def _populate_metric_catalog(
-        self,
-        catalog: dict[str, dict[str, set[str]]],
-        rows: list[dict[str, Any]] | list[tuple[Any, Any, Any]],
-    ) -> None:
-        for row in rows:
-            if isinstance(row, dict):
-                self._upsert_metric_catalog_entry(
-                    catalog,
-                    row.get("device_type"),
-                    row.get("device_id"),
-                    row.get("metric"),
-                )
-                continue
-            if len(row) < 3:
-                continue
-            self._upsert_metric_catalog_entry(catalog, row[0], row[1], row[2])
-
-    def _load_metric_catalog_from_db(self, conn: sqlite3.Connection) -> dict[str, dict[str, set[str]]]:
-        rows = conn.execute(
-            """
-            SELECT device_type, device_id, metric
-            FROM metrics
-            UNION
-            SELECT device_type, device_id, metric
-            FROM metric_rollups
-            ORDER BY device_type, device_id, metric
-            """
-        ).fetchall()
-        catalog: dict[str, dict[str, set[str]]] = {}
-        self._populate_metric_catalog(catalog, rows)
-        return catalog
-
-    def _ensure_metric_catalog_cache(
-        self,
-        conn: sqlite3.Connection | None = None,
-    ) -> dict[str, dict[str, set[str]]]:
-        if self._metric_catalog_cache is not None:
-            return self._metric_catalog_cache
-        if not self._db_path:
-            return {}
-        if conn is None:
-            with connect_logged_sqlite(self._db_path, logger=logger) as conn:
-                self._ensure_schema(conn)
-                self._metric_catalog_cache = self._load_metric_catalog_from_db(conn)
-        else:
-            self._ensure_schema(conn)
-            self._metric_catalog_cache = self._load_metric_catalog_from_db(conn)
-        return self._metric_catalog_cache
-
-    def _refresh_metric_catalog_cache(self, conn: sqlite3.Connection) -> None:
-        self._metric_catalog_cache = self._load_metric_catalog_from_db(conn)
-
-    def _update_metric_catalog_cache(self, rows: list[dict[str, Any]] | list[tuple[Any, Any, Any]]) -> None:
-        if self._metric_catalog_cache is None:
-            return
-        self._populate_metric_catalog(self._metric_catalog_cache, rows)
+    def get_metric_catalog_status(self) -> dict[str, Any]:
+        return self._catalog.snapshot()
 
     def _snapshot_metric_catalog(self) -> dict[str, dict[str, list[str]]]:
-        if not self._db_path:
-            return {}
-        with self._db_lock:
-            catalog = self._ensure_metric_catalog_cache()
-            return {
-                device_type: {
-                    device_id: sorted(metrics)
-                    for device_id, metrics in sorted(device_ids.items())
-                }
-                for device_type, device_ids in sorted(catalog.items())
-            }
+        return self._catalog.snapshot()["catalog"]
 
     def get_latest_payloads(self) -> dict[str, dict[str, Any]]:
         with self._lock:
@@ -394,28 +325,19 @@ class DevicePoller:
             }
 
     def get_economics_metadata(self) -> dict[str, Any]:
-        return self._economics_poller.get_metadata().as_dict()
+        status = self.get_metric_catalog_status()
+        metadata = self._economics_poller.get_metadata(catalog=status["catalog"]).as_dict()
+        metadata["ready"] = status["ready"]
+        return metadata
 
     def list_metric_device_types(self) -> list[str]:
-        if not self._db_path:
-            return []
-        with self._db_lock:
-            catalog = self._ensure_metric_catalog_cache()
-            return sorted(catalog)
+        return sorted(self.get_metric_catalog())
 
     def list_metric_device_ids(self, device_type: str) -> list[str]:
-        if not self._db_path:
-            return []
-        with self._db_lock:
-            catalog = self._ensure_metric_catalog_cache()
-            return sorted(catalog.get(device_type, {}))
+        return sorted(self.get_metric_catalog().get(device_type, {}))
 
     def list_metric_names(self, device_type: str, device_id: str) -> list[str]:
-        if not self._db_path:
-            return []
-        with self._db_lock:
-            catalog = self._ensure_metric_catalog_cache()
-            return sorted(catalog.get(device_type, {}).get(device_id, set()))
+        return self.get_metric_catalog().get(device_type, {}).get(device_id, [])
 
     def get_metric_catalog(self) -> dict[str, dict[str, list[str]]]:
         return self._snapshot_metric_catalog()
@@ -652,7 +574,6 @@ class DevicePoller:
                         """,
                         metric_rows,
                     )
-                    self._update_metric_catalog_cache(metric_rows)
 
     def _poll_device(
         self,
@@ -1082,7 +1003,6 @@ class DevicePoller:
                     """,
                     rows,
                 )
-                self._update_metric_catalog_cache(rows)
                 self._refresh_control_inputs(conn=conn, ts_ms=ts_ms)
 
     def _load_raw_events_retention_policy(self) -> RawEventsRetentionPolicy | None:
@@ -1229,6 +1149,56 @@ class DevicePoller:
             min_reclaimable_mb=min_reclaimable_mb,
         )
 
+    def _maintain_metric_catalog(self) -> None:
+        if not self._db_path:
+            return
+        started = time.perf_counter()
+        processed = 0
+        for source in ("metrics", "metric_rollups"):
+            while not self._maintenance_stop.is_set():
+                with self._db_lock:
+                    with closing(connect_logged_sqlite(self._db_path, logger=logger)) as conn, conn:
+                        self._ensure_schema(conn)
+                        last_id, complete = conn.execute(
+                            "SELECT last_id, complete FROM metric_catalog_progress WHERE source=?", (source,),
+                        ).fetchone()
+                        if complete:
+                            break
+                        extra = ", resolution_seconds" if source == "metric_rollups" else ""
+                        rows = conn.execute(
+                            f"SELECT id, device_type, device_id, metric{extra} FROM {source} "
+                            "WHERE id > ? ORDER BY id LIMIT ?", (last_id, RETENTION_BATCH_SIZE),
+                        ).fetchall()
+                        conn.executemany("INSERT OR IGNORE INTO metric_catalog VALUES (?, ?, ?)",
+                                         sorted({row[1:4] for row in rows}))
+                        if extra:
+                            conn.executemany("INSERT OR IGNORE INTO metric_catalog_resolutions VALUES (?)",
+                                             sorted({(row[4],) for row in rows}))
+                        conn.execute("UPDATE metric_catalog_progress SET last_id=?, complete=? WHERE source=?",
+                                     (rows[-1][0] if rows else last_id, int(len(rows) < RETENTION_BATCH_SIZE), source))
+                processed += len(rows)
+                if self._maintenance_stop.wait(RETENTION_BATCH_PAUSE_SECONDS):
+                    return
+        # Reconcile only catalog keys, never scan the telemetry tables for discovery again.
+        after = ("", "", "")
+        removed = 0
+        while not self._maintenance_stop.is_set():
+            with self._db_lock:
+                with closing(connect_logged_sqlite(self._db_path, logger=logger)) as conn, conn:
+                    self._ensure_schema(conn)
+                    keys = conn.execute("SELECT device_type, device_id, metric FROM metric_catalog "
+                                        "WHERE (device_type, device_id, metric) > (?, ?, ?) "
+                                        "ORDER BY device_type, device_id, metric LIMIT ?",
+                                        (*after, RETENTION_BATCH_SIZE)).fetchall()
+                    if not keys:
+                        break
+                    removed += prune_catalog(conn, keys)
+                    after = keys[-1]
+            if self._maintenance_stop.wait(RETENTION_BATCH_PAUSE_SECONDS):
+                return
+        logger.info("Metric catalog maintenance processed %s source rows, removed %s keys in %.3f seconds",
+                    processed, removed, time.perf_counter() - started)
+
     def _remove_obsolete_indexes(self) -> int:
         """Release obsolete index pages off the startup path, one index at a time."""
         if not self._db_path:
@@ -1298,13 +1268,19 @@ class DevicePoller:
             with self._db_lock:
                 with closing(connect_logged_sqlite(self._db_path, logger=logger)) as conn, conn:
                     self._ensure_schema(conn)
+                    keys = []
+                    if table == "metric_rollups":
+                        keys = conn.execute(
+                            f"SELECT device_type, device_id, metric FROM {table} WHERE {predicate} "
+                            "ORDER BY ts, id LIMIT :limit", params,
+                        ).fetchall()
                     deleted = conn.execute(
                         f"DELETE FROM {table} WHERE id IN ("
                         f"SELECT id FROM {table} WHERE {predicate} ORDER BY ts, id LIMIT :limit)",
                         params,
                     ).rowcount
-                    if deleted and table == "metric_rollups":
-                        self._metric_catalog_cache = None
+                    if keys:
+                        prune_catalog(conn, keys)
             total += deleted
             logger.debug("%s retention batch deleted %s rows in %.3f seconds",
                          table, deleted, time.perf_counter() - started)
@@ -1369,8 +1345,7 @@ class DevicePoller:
                     )
                     conn.executemany("DELETE FROM metrics WHERE id = ?",
                                      [(row[0],) for row in raw_rows])
-                # Invalidate only after commit; avoid scanning the entire catalog per batch.
-                self._metric_catalog_cache = None
+                    prune_catalog(conn, [(row[2], row[3], row[4]) for row in raw_rows])
             result["rolled_up_rows"] += len(rollup_rows)
             result["deleted_raw_rows"] += len(raw_rows)
             logger.debug("Metrics retention batch processed %s rows in %.3f seconds",
@@ -1781,7 +1756,6 @@ class DevicePoller:
             """,
             metric_rows,
         )
-        self._update_metric_catalog_cache(metric_rows)
 
     def _resolve_control_input(
         self,
@@ -2170,6 +2144,8 @@ class DevicePoller:
             )""")
             conn.execute(f"CREATE UNIQUE INDEX IF NOT EXISTS idx_{table}_rollups_resolution_ts "
                          f"ON {table}_rollups (resolution_seconds, ts)")
+
+        ensure_catalog_schema(conn)
 
     def _ensure_columns(
         self,

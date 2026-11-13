@@ -108,6 +108,9 @@ class DummyDevicePoller:
     def list_metric_names(self, device_type, device_id):
         return []
 
+    def get_metric_catalog_status(self):
+        return {"catalog": self.get_metric_catalog(), "ready": True}
+
     def get_metric_catalog(self):
         return self.metric_catalog.copy()
 
@@ -678,6 +681,7 @@ def test_metrics_catalog_api_returns_catalog(tmp_path, monkeypatch):
     payload = routes["/api/metrics/catalog"]()
 
     assert payload == {
+        "ready": True,
         "catalog": {
             "open_meteo": {"1001": ["temperature", "windspeed"]},
             "zont": {"12000": ["room_temp"]},

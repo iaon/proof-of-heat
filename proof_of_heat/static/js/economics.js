@@ -451,8 +451,23 @@ async function loadChart() {
 }
 
 async function loadCatalog() {
-    const res = await fetch(apiUrl("/api/economics/catalog"));
-    const payload = await res.json();
+    const notice = document.createElement("div");
+    notice.setAttribute("role", "status");
+    metricRowsEl.before(notice);
+    let payload;
+    while (true) {
+        try {
+            const res = await fetch(apiUrl("/api/economics/catalog"));
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+            payload = await res.json();
+            if (payload.ready !== false) break;
+            notice.textContent = "Список доступных показателей формируется. Он обновится автоматически.";
+        } catch (error) {
+            notice.textContent = "Не удалось загрузить список показателей. Повторяем попытку…";
+        }
+        await new Promise((resolve) => setTimeout(resolve, 2000));
+    }
+    notice.remove();
     catalogData = payload && typeof payload === "object" ? payload : catalogData;
     const metrics = Array.isArray(catalogData.metrics) ? catalogData.metrics : [];
     availableMetrics = Array.from(new Set(metrics));

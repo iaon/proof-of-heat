@@ -1113,7 +1113,7 @@ def test_zont_refresh_interval_180_is_valid(monkeypatch, tmp_path):
     try:
         assert poller._scheduler is not None
         jobs = [job for job in poller._scheduler.get_jobs()
-                if job.id != "maintenance-indexes"]
+                if job.id not in {"maintenance-indexes", "maintenance-catalog"}]
         assert len(jobs) == 1
         assert "interval[0:03:00]" in str(jobs[0].trigger)
     finally:
@@ -1164,7 +1164,7 @@ def test_raw_events_retention_job_is_scheduled_and_runs_on_start(monkeypatch, tm
     try:
         assert poller._scheduler is not None
         jobs = [job for job in poller._scheduler.get_jobs()
-                if job.id != "maintenance-indexes"]
+                if job.id not in {"maintenance-indexes", "maintenance-catalog"}]
         assert len(jobs) == 1
         assert jobs[0].id == "retention-raw-events"
         assert "interval[1:00:00]" in str(jobs[0].trigger)
@@ -1236,7 +1236,7 @@ def test_metrics_retention_job_is_scheduled_and_runs_on_start(monkeypatch, tmp_p
     try:
         assert poller._scheduler is not None
         jobs = [job for job in poller._scheduler.get_jobs()
-                if job.id != "maintenance-indexes"]
+                if job.id not in {"maintenance-indexes", "maintenance-catalog"}]
         assert len(jobs) == 1
         assert jobs[0].id == "retention-metrics"
         assert "interval[1:00:00]" in str(jobs[0].trigger)
@@ -1279,7 +1279,7 @@ def test_database_vacuum_job_is_scheduled_without_startup_run(monkeypatch, tmp_p
     try:
         assert poller._scheduler is not None
         jobs = [job for job in poller._scheduler.get_jobs()
-                if job.id != "maintenance-indexes"]
+                if job.id not in {"maintenance-indexes", "maintenance-catalog"}]
         assert len(jobs) == 1
         assert jobs[0].id == "maintenance-vacuum"
         assert "interval[1 day, 0:00:00]" in str(jobs[0].trigger)
@@ -1953,7 +1953,7 @@ def test_economics_job_is_scheduled_without_devices(monkeypatch, tmp_path):
     try:
         assert poller._scheduler is not None
         jobs = [job for job in poller._scheduler.get_jobs()
-                if job.id != "maintenance-indexes"]
+                if job.id not in {"maintenance-indexes", "maintenance-catalog"}]
         assert len(jobs) == 1
         assert jobs[0].id == "economics-market"
         assert "interval[1:00:00]" in str(jobs[0].trigger)

@@ -569,10 +569,10 @@ def create_app(
         }
 
     @app.get("/api/metrics/catalog")
-    def get_metrics_catalog() -> dict[str, dict[str, dict[str, list[str]]]]:
-        catalog = device_poller.get_metric_catalog()
-        catalog.pop("economics", None)
-        return {"catalog": catalog}
+    def get_metrics_catalog() -> dict[str, Any]:
+        status = device_poller.get_metric_catalog_status()
+        status["catalog"].pop("economics", None)
+        return status
 
     @app.get("/api/metrics/device-ids")
     def list_metric_device_ids(device_type: str) -> dict[str, list[str]]:
